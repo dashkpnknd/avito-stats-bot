@@ -60,19 +60,6 @@ async def init_db() -> None:
             )
             """
         )
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS admins (
-                telegram_id INTEGER PRIMARY KEY,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        for admin_id in config.ADMIN_IDS:
-            await db.execute(
-                "INSERT OR IGNORE INTO admins (telegram_id, created_at) VALUES (?, ?)",
-                (admin_id, _now()),
-            )
         columns = await _columns(db, "stores")
         for column, definition in {
             "daily_enabled": "INTEGER NOT NULL DEFAULT 1",
@@ -184,53 +171,6 @@ async def get_balance_monitored_stores() -> list[aiosqlite.Row]:
             "SELECT * FROM stores WHERE low_balance_enabled = 1 ORDER BY store_name COLLATE NOCASE"
         ) as cursor:
             return await cursor.fetchall()
-
-
-async def is_admin(telegram_id: int) -> bool:
-    async with aiosqlite.connect(config.DB_NAME) as db:
-        async with db.execute("SELECT 1 FROM admins WHERE telegram_id = ?", (telegram_id,)) as cursor:
-            return await cursor.fetchone() is not None
-
-
-async def get_admin_ids() -> set[int]:
-    async with aiosqlite.connect(config.DB_NAME) as db:
-        async with db.execute("SELECT telegram_id FROM admins") as cursor:
-            return {int(row[0]) for row in await cursor.fetchall()}
-
-
-async def claim_first_admin(telegram_id: int) -> bool:
-    """Atomically assign the one-time bootstrap admin when the list is empty."""
-    async with aiosqlite.connect(config.DB_NAME) as db:
-        cursor = await db.execute(
-            """
-            INSERT INTO admins (telegram_id, created_at)
-            SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM admins)
-            """,
-            (telegram_id, _now()),
-        )
-        await db.commit()
-        return cursor.rowcount > 0
-
-
-async def add_admin(telegram_id: int) -> bool:
-    async with aiosqlite.connect(config.DB_NAME) as db:
-        cursor = await db.execute(
-            "INSERT OR IGNORE INTO admins (telegram_id, created_at) VALUES (?, ?)",
-            (telegram_id, _now()),
-        )
-        await db.commit()
-        return cursor.rowcount > 0
-
-
-async def remove_admin(telegram_id: int) -> bool:
-    async with aiosqlite.connect(config.DB_NAME) as db:
-        async with db.execute("SELECT COUNT(*) FROM admins") as cursor:
-            count = int((await cursor.fetchone())[0])
-        if count <= 1:
-            return False
-        cursor = await db.execute("DELETE FROM admins WHERE telegram_id = ?", (telegram_id,))
-        await db.commit()
-        return cursor.rowcount > 0
 
 
 async def get_store_by_id(store_id: int) -> aiosqlite.Row | None:

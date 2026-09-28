@@ -10,7 +10,6 @@ from cryptography.fernet import Fernet
 _TEMP_DIR = tempfile.TemporaryDirectory()
 os.environ["DB_NAME"] = str(Path(_TEMP_DIR.name) / "test.sqlite3")
 os.environ["CREDENTIALS_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
-os.environ["ALLOW_FIRST_ADMIN"] = "1"
 
 import database  # noqa: E402
 
@@ -33,11 +32,6 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(store["low_balance_is_low"], 1)
             self.assertIsNotNone(store["low_balance_last_alert_at"])
             self.assertEqual(len(await database.get_balance_monitored_stores()), 1)
-            self.assertTrue(await database.claim_first_admin(777))
-            self.assertFalse(await database.claim_first_admin(888))
-            self.assertTrue(await database.is_admin(777))
-            self.assertTrue(await database.add_admin(888))
-            self.assertTrue(await database.remove_admin(888))
 
         asyncio.run(scenario())
 

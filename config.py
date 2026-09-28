@@ -17,7 +17,6 @@ def _int_set(value: str) -> set[int]:
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_IDS = _int_set(os.getenv("ADMIN_IDS", ""))
 ADMIN_ALERT_CHAT_IDS = _int_set(os.getenv("ADMIN_ALERT_CHAT_IDS", "")) or ADMIN_IDS
-ALLOW_FIRST_ADMIN = os.getenv("ALLOW_FIRST_ADMIN", "").strip().lower() in {"1", "true", "yes"}
 DB_NAME = os.getenv("DB_NAME", "data/avito_stats.sqlite3")
 FERNET_KEY = os.getenv("CREDENTIALS_ENCRYPTION_KEY", "")
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Moscow")
@@ -57,8 +56,6 @@ def validate_config() -> None:
     missing = []
     if not BOT_TOKEN:
         missing.append("BOT_TOKEN")
-    if not ADMIN_IDS and not ALLOW_FIRST_ADMIN:
-        missing.append("ADMIN_IDS (или ALLOW_FIRST_ADMIN=1)")
     if not FERNET_KEY:
         missing.append("CREDENTIALS_ENCRYPTION_KEY")
     if missing:

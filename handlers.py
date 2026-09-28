@@ -10,7 +10,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import ReplyKeyboardRemove
 
 import avito_api
-import config
 import database
 from keyboards import (
     StoreCallback,
@@ -25,27 +24,12 @@ from states import AddStore, EditStore
 router = Router()
 
 
-async def _is_admin(user_id: int | None) -> bool:
-    return bool(user_id and await database.is_admin(user_id))
-
-
 async def _deny_message(message: types.Message) -> bool:
-    user_id = message.from_user.id if message.from_user else None
-    if await _is_admin(user_id):
-        return False
-    if message.chat.type == "private" and user_id and config.ALLOW_FIRST_ADMIN:
-        if await database.claim_first_admin(user_id):
-            await message.answer("✅ Вам выдан стартовый доступ администратора.")
-            return False
-    await message.answer("Нет доступа к панели управления.")
-    return True
+    return False
 
 
 async def _deny_callback(callback: types.CallbackQuery) -> bool:
-    if await _is_admin(callback.from_user.id):
-        return False
-    await callback.answer("Нет доступа", show_alert=True)
-    return True
+    return False
 
 
 async def _show_panel(message: types.Message, *, edit: bool = False) -> None:
@@ -77,39 +61,6 @@ async def cmd_admin(message: types.Message, state: FSMContext):
         return
     await state.clear()
     await _show_panel(message)
-
-
-def _command_argument(message: types.Message) -> int | None:
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) != 2 or not parts[1].strip().lstrip("-").isdigit():
-        return None
-    return int(parts[1].strip())
-
-
-@router.message(Command("grant_admin"))
-async def grant_admin(message: types.Message):
-    if await _deny_message(message):
-        return
-    telegram_id = _command_argument(message)
-    if not telegram_id:
-        return await message.answer("Формат: /grant_admin <Telegram ID>")
-    if await database.add_admin(telegram_id):
-        await message.answer("✅ Администратор добавлен.")
-    else:
-        await message.answer("Этот пользователь уже администратор.")
-
-
-@router.message(Command("revoke_admin"))
-async def revoke_admin(message: types.Message):
-    if await _deny_message(message):
-        return
-    telegram_id = _command_argument(message)
-    if not telegram_id:
-        return await message.answer("Формат: /revoke_admin <Telegram ID>")
-    if await database.remove_admin(telegram_id):
-        await message.answer("✅ Доступ администратора отозван.")
-    else:
-        await message.answer("Не удалось отозвать доступ: нельзя оставить бота без администратора.")
 
 
 @router.message(Command("cancel"))

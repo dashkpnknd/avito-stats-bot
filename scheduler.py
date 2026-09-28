@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _notify_admins(bot: Bot, text: str) -> None:
-    for chat_id in config.ADMIN_ALERT_CHAT_IDS | await database.get_admin_ids():
+    for chat_id in config.ADMIN_ALERT_CHAT_IDS:
         try:
             await bot.send_message(chat_id, text)
         except TelegramAPIError:

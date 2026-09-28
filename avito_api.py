@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 import aiohttp
@@ -15,6 +15,7 @@ TOKEN_URL = "https://api.avito.ru/token"
 SELF_URL = "https://api.avito.ru/core/v1/accounts/self"
 ITEMS_URL = "https://api.avito.ru/core/v1/items"
 STATS_URL = "https://api.avito.ru/stats/v1/accounts/{user_id}/items"
+STATS_V2_ITEMS_URL = "https://api.avito.ru/stats/v2/accounts/{user_id}/items"
 BALANCE_URL = "https://api.avito.ru/core/v1/accounts/{user_id}/balance/"
 CALLS_STATS_URL = "https://api.avito.ru/core/v1/accounts/{user_id}/calls/stats/"
 SPENDINGS_URL = "https://api.avito.ru/stats/v2/accounts/{user_id}/spendings"
@@ -211,6 +212,63 @@ async def get_daily_stats(
                     totals["calls"] += _metric(row, "calls", "phoneContacts")
                     totals["messages"] += _metric(row, "messages", "chatContacts")
                     totals["spend"] += _metric(row, "spend", "expenses")
+    return dict(daily)
+
+
+async def get_daily_promo_stats(
+    token: str, user_id: int, date_from: date, date_to: date
+) -> dict[date, dict[str, float]]:
+    """Return daily views, contacts and real messenger contacts from Promo v2.
+
+    The v1 item-statistics endpoint has no messages metric.  The Promo v2
+    endpoint exposes ``contactsMessenger`` per day, so it must be used rather
+    than deriving messages from all contacts or filling a zero placeholder.
+    """
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    async def request() -> dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=45)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                STATS_V2_ITEMS_URL.format(user_id=user_id),
+                headers=headers,
+                json={
+                    "dateFrom": date_from.isoformat(),
+                    "dateTo": date_to.isoformat(),
+                    "grouping": "day",
+                    "metrics": ["views", "contacts", "contactsMessenger"],
+                },
+            ) as response:
+                body = await response.text()
+                if response.status != 200:
+                    raise AvitoAPIError(
+                        f"Сообщения Avito: HTTP {response.status}: {body[:400]}"
+                    )
+                return await response.json()
+
+    payload = await _request_with_retry(request)
+    daily: dict[date, dict[str, float]] = defaultdict(
+        lambda: {"views": 0.0, "contacts": 0.0, "favorites": 0.0,
+                 "calls": 0.0, "messages": 0.0, "spend": 0.0}
+    )
+    metric_names = {
+        "views": "views",
+        "contacts": "contacts",
+        "contactsMessenger": "messages",
+    }
+    for grouping in (payload.get("result") or {}).get("groupings") or []:
+        try:
+            # Promo v2 returns a UTC Unix timestamp as the daily grouping id.
+            grouping_date = datetime.fromtimestamp(int(grouping["id"]), tz=timezone.utc).date()
+        except (KeyError, TypeError, ValueError, OSError, OverflowError):
+            continue
+        if not date_from <= grouping_date <= date_to:
+            continue
+        totals = daily[grouping_date]
+        for metric in grouping.get("metrics") or []:
+            key = metric_names.get(metric.get("slug"))
+            if key:
+                totals[key] = _number(metric.get("value"))
     return dict(daily)
 
 

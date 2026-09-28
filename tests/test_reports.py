@@ -32,16 +32,17 @@ class MessageTests(unittest.TestCase):
         text = format_daily_report(
             "Test <shop>",
             date(2026, 9, 27),
-            {"views": 5, "contacts": 1, "spend": 0},
+            {"views": 5, "contacts": 1, "messages": 1, "spend": 0},
             date(2026, 9, 21),
             date(2026, 9, 27),
-            {"views": 50, "contacts": 10, "spend": 1000, "calls": 3},
+            {"views": 50, "contacts": 10, "spend": 1000, "calls": 3, "messages": 7},
             {"views": 40, "contacts": 8, "spend": 800, "calls": 1},
             self.balance,
         )
         self.assertIn("<b>Вчера</b> (27.09)", text)
         self.assertIn("<b>Неделя</b> (21.09 – 27.09)", text)
-        self.assertIn("💰 Расходы: 1 000   ▲ +25% ₽", text)
+        self.assertIn("💰 Расходы: 1 000 ₽   ▲ +25%", text)
+        self.assertIn("└ Сообщения: 7", text)
         self.assertIn("💳 Кошелёк: <b>1 200 ₽</b> | Аванс: <b>1 700 ₽</b>", text)
         self.assertIn("TEST &lt;SHOP&gt;", text)
 

@@ -67,8 +67,13 @@ def _period_block(
     lines.append(_metric_line("👁 Просмотры", stats["views"], previous["views"] if previous else None))
     lines.append(_metric_line("📞 Контакты", stats["contacts"], previous["contacts"] if previous else None))
     lines.append(f"   ├ Звонки: {_money(stats.get('calls', 0))}")
-    lines.append("   └ Сообщения: —")
-    lines.append(_metric_line("💰 Расходы", stats.get("spend", 0), previous.get("spend", 0) if previous else None) + " ₽")
+    lines.append(f"   └ Сообщения: {_money(stats.get('messages', 0))}")
+    # Keep the rouble sign beside the amount, before the comparison marker:
+    # ``10 909 ₽   ▲ +1,3%`` is easier to scan in a client chat.
+    spend_line = f"💰 Расходы: {_money(stats.get('spend', 0))} ₽"
+    if previous is not None:
+        spend_line += f"   {_change(stats.get('spend', 0), previous.get('spend', 0))}"
+    lines.append(spend_line)
     views, contacts, spend = float(stats["views"]), float(stats["contacts"]), float(stats.get("spend", 0))
     lines.append(f"📊 Цена/просмотр: {_money(spend / views if views else 0, 2)} ₽")
     lines.append(f"📊 Цена/контакт: {_money(spend / contacts if contacts else 0, 2)} ₽")

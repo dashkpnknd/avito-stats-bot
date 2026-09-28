@@ -44,7 +44,9 @@ async def build_report(store, report_type: str, as_of: date) -> str:
         current_from, current_to, previous_from, previous_to = report_period(report_type, as_of)
         date_from, date_to = previous_from, current_to
 
-    daily = await avito_api.get_daily_stats(token, int(user_id), date_from, date_to)
+    # Promo v2 returns views, total contacts and contactsMessenger together.
+    # One request avoids rate-limit collisions between separate stats calls.
+    daily = await avito_api.get_daily_promo_stats(token, int(user_id), date_from, date_to)
     item_ids = await avito_api.get_all_item_ids(token)
     calls = await avito_api.get_daily_calls(token, int(user_id), item_ids, date_from, date_to)
     spendings = await avito_api.get_daily_spendings(token, int(user_id), date_from, date_to)

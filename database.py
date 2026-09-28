@@ -1,47 +1,321 @@
+"""SQLite persistence and one-time migration from the first bot prototype."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
 import aiosqlite
+from cryptography.fernet import Fernet, InvalidToken
+
 import config
 
-async def init_db():
+
+def _cipher() -> Fernet:
+    return Fernet(config.FERNET_KEY.encode())
+
+
+def _encrypt(value: str) -> str:
+    return _cipher().encrypt(value.encode()).decode()
+
+
+def _decrypt(value: str) -> str:
+    try:
+        return _cipher().decrypt(value.encode()).decode()
+    except InvalidToken:
+        # Legacy databases stored the secret as text. It is re-encrypted when
+        # the project is next saved, while remaining usable during migration.
+        return value
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def _columns(db: aiosqlite.Connection, table: str) -> set[str]:
+    async with db.execute(f"PRAGMA table_info({table})") as cursor:
+        return {row[1] for row in await cursor.fetchall()}
+
+
+async def init_db() -> None:
     async with aiosqlite.connect(config.DB_NAME) as db:
-        await db.execute('''
+        await db.execute("PRAGMA foreign_keys = ON")
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS stores (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER NOT NULL,
                 store_name TEXT NOT NULL,
                 client_id TEXT NOT NULL,
                 client_secret TEXT NOT NULL,
-                user_id INTEGER -- Добавили новую колонку!
+                user_id INTEGER,
+                daily_enabled INTEGER NOT NULL DEFAULT 1,
+                weekly_enabled INTEGER NOT NULL DEFAULT 1,
+                monthly_enabled INTEGER NOT NULL DEFAULT 0,
+                low_balance_enabled INTEGER NOT NULL DEFAULT 1,
+                client_mention TEXT NOT NULL DEFAULT '',
+                low_balance_is_low INTEGER NOT NULL DEFAULT 0,
+                low_balance_last_alert_at TEXT,
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT ''
             )
-        ''')
+            """
+        )
+        columns = await _columns(db, "stores")
+        for column, definition in {
+            "daily_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "weekly_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "monthly_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "low_balance_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "client_mention": "TEXT NOT NULL DEFAULT ''",
+            "low_balance_is_low": "INTEGER NOT NULL DEFAULT 0",
+            "low_balance_last_alert_at": "TEXT",
+            "created_at": "TEXT NOT NULL DEFAULT ''",
+            "updated_at": "TEXT NOT NULL DEFAULT ''",
+        }.items():
+            if column not in columns:
+                await db.execute(f"ALTER TABLE stores ADD COLUMN {column} {definition}")
+
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS report_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+                report_type TEXT NOT NULL CHECK(report_type IN ('daily', 'weekly', 'monthly')),
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('processing', 'sent', 'failed')),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                telegram_message_id INTEGER,
+                error_text TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                sent_at TEXT,
+                UNIQUE(store_id, report_type, period_start, period_end)
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_report_deliveries_status ON report_deliveries(status, updated_at)"
+        )
+        now = _now()
+        await db.execute("UPDATE stores SET created_at = ? WHERE created_at = ''", (now,))
+        await db.execute("UPDATE stores SET updated_at = ? WHERE updated_at = ''", (now,))
+        # Migrate only the first prototype's plaintext client secrets. A token
+        # that cannot be decrypted with this deployment key is legacy plaintext.
+        async with db.execute("SELECT id, client_secret FROM stores") as cursor:
+            legacy_secrets = await cursor.fetchall()
+        for store_id, secret in legacy_secrets:
+            try:
+                _cipher().decrypt(secret.encode())
+            except InvalidToken:
+                await db.execute(
+                    "UPDATE stores SET client_secret = ?, updated_at = ? WHERE id = ?",
+                    (_encrypt(secret), now, store_id),
+                )
         await db.commit()
 
-async def add_store(chat_id: int, store_name: str, client_id: str, client_secret: str, user_id: int):
+
+async def add_store(
+    chat_id: int,
+    store_name: str,
+    client_id: str,
+    client_secret: str,
+    user_id: int,
+    client_mention: str = "",
+) -> int:
+    now = _now()
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO stores (
+                chat_id, store_name, client_id, client_secret, user_id,
+                client_mention, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                chat_id,
+                store_name.strip(),
+                client_id.strip(),
+                _encrypt(client_secret.strip()),
+                user_id,
+                client_mention.strip(),
+                now,
+                now,
+            ),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_all_stores() -> list[aiosqlite.Row]:
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM stores ORDER BY store_name COLLATE NOCASE") as cursor:
+            return await cursor.fetchall()
+
+
+async def get_enabled_stores(report_type: str) -> list[aiosqlite.Row]:
+    column = {"daily": "daily_enabled", "weekly": "weekly_enabled", "monthly": "monthly_enabled"}[report_type]
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            f"SELECT * FROM stores WHERE {column} = 1 ORDER BY store_name COLLATE NOCASE"
+        ) as cursor:
+            return await cursor.fetchall()
+
+
+async def get_balance_monitored_stores() -> list[aiosqlite.Row]:
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM stores WHERE low_balance_enabled = 1 ORDER BY store_name COLLATE NOCASE"
+        ) as cursor:
+            return await cursor.fetchall()
+
+
+async def get_store_by_id(store_id: int) -> aiosqlite.Row | None:
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM stores WHERE id = ?", (store_id,)) as cursor:
+            return await cursor.fetchone()
+
+
+async def get_store_credentials(store: aiosqlite.Row) -> tuple[str, str]:
+    return store["client_id"], _decrypt(store["client_secret"])
+
+
+async def toggle_report(store_id: int, report_type: str) -> bool | None:
+    column = {"daily": "daily_enabled", "weekly": "weekly_enabled", "monthly": "monthly_enabled"}[report_type]
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(f"SELECT {column} FROM stores WHERE id = ?", (store_id,)) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return None
+        enabled = not bool(row[column])
+        await db.execute(
+            f"UPDATE stores SET {column} = ?, updated_at = ? WHERE id = ?",
+            (int(enabled), _now(), store_id),
+        )
+        await db.commit()
+        return enabled
+
+
+async def toggle_low_balance_monitoring(store_id: int) -> bool | None:
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT low_balance_enabled FROM stores WHERE id = ?", (store_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return None
+        enabled = not bool(row["low_balance_enabled"])
+        await db.execute(
+            "UPDATE stores SET low_balance_enabled = ?, updated_at = ? WHERE id = ?",
+            (int(enabled), _now(), store_id),
+        )
+        await db.commit()
+        return enabled
+
+
+async def update_client_mention(store_id: int, client_mention: str) -> bool:
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        cursor = await db.execute(
+            "UPDATE stores SET client_mention = ?, updated_at = ? WHERE id = ?",
+            (client_mention.strip(), _now(), store_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def update_low_balance_state(
+    store_id: int, *, is_low: bool, alert_sent: bool = False
+) -> None:
+    """Persist threshold state so the client is not messaged every poll."""
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        if alert_sent:
+            await db.execute(
+                """
+                UPDATE stores
+                SET low_balance_is_low = ?, low_balance_last_alert_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (int(is_low), _now(), _now(), store_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE stores SET low_balance_is_low = ?, updated_at = ? WHERE id = ?",
+                (int(is_low), _now(), store_id),
+            )
+        await db.commit()
+
+
+async def delete_store(store_id: int) -> bool:
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        await db.execute("DELETE FROM report_deliveries WHERE store_id = ?", (store_id,))
+        cursor = await db.execute("DELETE FROM stores WHERE id = ?", (store_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def claim_delivery(store_id: int, report_type: str, period_start: str, period_end: str) -> int | None:
+    """Atomically reserve a report. A sent period can never be sent again."""
+    now = _now()
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        try:
+            cursor = await db.execute(
+                """
+                INSERT INTO report_deliveries (
+                    store_id, report_type, period_start, period_end, status,
+                    attempts, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'processing', 1, ?, ?)
+                """,
+                (store_id, report_type, period_start, period_end, now, now),
+            )
+            await db.commit()
+            return cursor.lastrowid
+        except aiosqlite.IntegrityError:
+            async with db.execute(
+                """
+                SELECT id, status FROM report_deliveries
+                WHERE store_id = ? AND report_type = ? AND period_start = ? AND period_end = ?
+                """,
+                (store_id, report_type, period_start, period_end),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if not row or row[1] == "sent":
+                return None
+            await db.execute(
+                """
+                UPDATE report_deliveries
+                SET status = 'processing', attempts = attempts + 1, error_text = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, row[0]),
+            )
+            await db.commit()
+            return row[0]
+
+
+async def mark_delivery_sent(delivery_id: int, message_id: int) -> None:
+    now = _now()
     async with aiosqlite.connect(config.DB_NAME) as db:
         await db.execute(
-            'INSERT INTO stores (chat_id, store_name, client_id, client_secret, user_id) VALUES (?, ?, ?, ?, ?)',
-            (chat_id, store_name, client_id, client_secret, user_id)
+            """
+            UPDATE report_deliveries
+            SET status = 'sent', telegram_message_id = ?, sent_at = ?, updated_at = ?, error_text = NULL
+            WHERE id = ?
+            """,
+            (message_id, now, now, delivery_id),
         )
         await db.commit()
 
-async def get_all_stores() -> list:
-    async with aiosqlite.connect(config.DB_NAME) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute('SELECT * FROM stores') as cursor:
-            return await cursor.fetchall()
 
-async def get_stores_by_chat(chat_id: int) -> list:
+async def mark_delivery_failed(delivery_id: int, error_text: str) -> None:
     async with aiosqlite.connect(config.DB_NAME) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute('SELECT * FROM stores WHERE chat_id = ?', (chat_id,)) as cursor:
-            return await cursor.fetchall()
-
-async def delete_store(store_id: int):
-    async with aiosqlite.connect(config.DB_NAME) as db:
-        await db.execute('DELETE FROM stores WHERE id = ?', (store_id,))
+        await db.execute(
+            "UPDATE report_deliveries SET status = 'failed', error_text = ?, updated_at = ? WHERE id = ?",
+            (error_text[:2000], _now(), delivery_id),
+        )
         await db.commit()
-
-async def get_store_by_id(store_id: int):
-    async with aiosqlite.connect(config.DB_NAME) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute('SELECT * FROM stores WHERE id = ?', (store_id,)) as cursor:
-            return await cursor.fetchone()

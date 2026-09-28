@@ -1,0 +1,20 @@
+[Unit]
+Description=Avito statistics Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=avito-bot
+WorkingDirectory=/opt/avito-stats-bot
+EnvironmentFile=/etc/avito-stats-bot.env
+ExecStart=/opt/avito-stats-bot/.venv/bin/python /opt/avito-stats-bot/main.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/avito-stats-bot/data
+
+[Install]
+WantedBy=multi-user.target

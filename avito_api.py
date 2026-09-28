@@ -16,6 +16,8 @@ SELF_URL = "https://api.avito.ru/core/v1/accounts/self"
 ITEMS_URL = "https://api.avito.ru/core/v1/items"
 STATS_URL = "https://api.avito.ru/stats/v1/accounts/{user_id}/items"
 BALANCE_URL = "https://api.avito.ru/core/v1/accounts/{user_id}/balance/"
+CALLS_STATS_URL = "https://api.avito.ru/core/v1/accounts/{user_id}/calls/stats/"
+SPENDINGS_URL = "https://api.avito.ru/stats/v2/accounts/{user_id}/spendings"
 
 
 class AvitoAPIError(RuntimeError):
@@ -210,6 +212,85 @@ async def get_daily_stats(
                     totals["messages"] += _metric(row, "messages", "chatContacts")
                     totals["spend"] += _metric(row, "spend", "expenses")
     return dict(daily)
+
+
+async def get_daily_calls(
+    token: str, user_id: int, item_ids: list[int], date_from: date, date_to: date
+) -> dict[date, int]:
+    """Return calls per day from Avito's dedicated call-statistics endpoint."""
+    if not item_ids:
+        return {}
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    calls: dict[date, int] = defaultdict(int)
+    timeout = aiohttp.ClientTimeout(total=60)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for start in range(0, len(item_ids), 100):
+            item_chunk = item_ids[start : start + 100]
+
+            async def request() -> dict[str, Any]:
+                async with session.post(
+                    CALLS_STATS_URL.format(user_id=user_id),
+                    headers=headers,
+                    json={
+                        "dateFrom": date_from.isoformat(),
+                        "dateTo": date_to.isoformat(),
+                        "itemIds": item_chunk,
+                    },
+                ) as response:
+                    body = await response.text()
+                    if response.status != 200:
+                        raise AvitoAPIError(f"Звонки Avito: HTTP {response.status}: {body[:400]}")
+                    return await response.json()
+
+            payload = await _request_with_retry(request)
+            for item in (payload.get("result") or {}).get("items") or []:
+                for row in item.get("days") or []:
+                    try:
+                        row_date = date.fromisoformat(row["date"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if date_from <= row_date <= date_to:
+                        calls[row_date] += int(_number(row.get("calls")))
+    return dict(calls)
+
+
+async def get_daily_spendings(
+    token: str, user_id: int, date_from: date, date_to: date
+) -> dict[date, float]:
+    """Return all account expenses grouped by day, in roubles."""
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    async def request() -> dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=45)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                SPENDINGS_URL.format(user_id=user_id),
+                headers=headers,
+                json={
+                    "dateFrom": date_from.isoformat(),
+                    "dateTo": date_to.isoformat(),
+                    "grouping": "day",
+                    "spendingTypes": ["all"],
+                },
+            ) as response:
+                body = await response.text()
+                if response.status != 200:
+                    raise AvitoAPIError(f"Расходы Avito: HTTP {response.status}: {body[:400]}")
+                return await response.json()
+
+    payload = await _request_with_retry(request)
+    result: dict[date, float] = {}
+    for grouping in (payload.get("result") or {}).get("groupings") or []:
+        try:
+            grouping_date = date.fromisoformat(grouping["date"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not date_from <= grouping_date <= date_to:
+            continue
+        result[grouping_date] = round(
+            sum(_number(item.get("value")) for item in grouping.get("spendings") or []), 2
+        )
+    return result
 
 
 def sum_period(daily: dict[date, dict[str, float]], date_from: date, date_to: date) -> dict[str, int | float]:

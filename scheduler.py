@@ -14,9 +14,11 @@ import avito_api
 import config
 import database
 from reports import (
+    daily_report_periods,
     format_low_balance_client_alert,
     format_low_balance_team_alert,
-    format_report,
+    format_daily_report,
+    format_period_report,
     report_period,
 )
 
@@ -32,17 +34,36 @@ async def _notify_admins(bot: Bot, text: str) -> None:
 
 
 async def build_report(store, report_type: str, as_of: date) -> str:
-    current_from, current_to, previous_from, previous_to = report_period(report_type, as_of)
     client_id, client_secret = await database.get_store_credentials(store)
     token = await avito_api.get_avito_token(client_id, client_secret)
     user_id = store["user_id"] or await avito_api.get_avito_user_id(token)
-    daily = await avito_api.get_daily_stats(token, int(user_id), previous_from, current_to)
+    if report_type == "daily":
+        yesterday, week_start, week_end, previous_week_start, previous_week_end = daily_report_periods(as_of)
+        date_from, date_to = previous_week_start, week_end
+    else:
+        current_from, current_to, previous_from, previous_to = report_period(report_type, as_of)
+        date_from, date_to = previous_from, current_to
+
+    daily = await avito_api.get_daily_stats(token, int(user_id), date_from, date_to)
+    item_ids = await avito_api.get_all_item_ids(token)
+    calls = await avito_api.get_daily_calls(token, int(user_id), item_ids, date_from, date_to)
+    spendings = await avito_api.get_daily_spendings(token, int(user_id), date_from, date_to)
+    for day, value in calls.items():
+        daily.setdefault(day, {"views": 0.0, "contacts": 0.0, "favorites": 0.0, "calls": 0.0, "messages": 0.0, "spend": 0.0})["calls"] = value
+    for day, value in spendings.items():
+        daily.setdefault(day, {"views": 0.0, "contacts": 0.0, "favorites": 0.0, "calls": 0.0, "messages": 0.0, "spend": 0.0})["spend"] = value
+    balance = await avito_api.get_balance(token, int(user_id))
+    if report_type == "daily":
+        yesterday_stats = avito_api.sum_period(daily, yesterday, yesterday)
+        week_stats = avito_api.sum_period(daily, week_start, week_end)
+        previous_week_stats = avito_api.sum_period(daily, previous_week_start, previous_week_end)
+        return format_daily_report(
+            store["store_name"], yesterday, yesterday_stats, week_start, week_end,
+            week_stats, previous_week_stats, balance,
+        )
     current = avito_api.sum_period(daily, current_from, current_to)
     previous = avito_api.sum_period(daily, previous_from, previous_to)
-    balance = await avito_api.get_balance(token, int(user_id))
-    return format_report(
-        store["store_name"], report_type, current_from, current_to, current, previous, balance
-    )
+    return format_period_report(store["store_name"], report_type, current_from, current_to, current, previous, balance)
 
 
 async def _telegram_send_with_retry(bot: Bot, chat_id: int, text: str):

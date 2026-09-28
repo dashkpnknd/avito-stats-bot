@@ -52,7 +52,7 @@ async def cmd_get_id(message: types.Message):
     """Public utility: use it in the target group after adding the bot there."""
     if message.chat.type == "private":
         return await message.answer("Добавьте бота в нужную группу и выполните там /get_id.")
-    await message.answer(f"ID этого чата: <code>{message.chat.id}</code>")
+    await message.answer(f"ID этого чата: <code>{message.chat.id}</code>", parse_mode="HTML")
 
 
 @router.message(Command("start", "admin"))

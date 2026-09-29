@@ -111,10 +111,15 @@ async def send_project_report(
         logger.exception("Ошибка отчёта %s для %s", report_type, store["store_name"])
         if delivery_id is not None:
             await database.mark_delivery_failed(delivery_id, str(exc))
-        await _notify_admins(
-            bot,
-            f"⚠️ Не отправлен {report_type}-отчёт для «{store['store_name']}»: {str(exc)[:800]}",
-        )
+        # A manually launched test is expected to be retried by the operator.
+        # Do not pollute the avitologists' operational chat with transient
+        # Avito rate-limit errors from such a test. Scheduled deliveries still
+        # notify the team about every real failure.
+        if not test:
+            await _notify_admins(
+                bot,
+                f"⚠️ Не отправлен {report_type}-отчёт для «{store['store_name']}»: {str(exc)[:800]}",
+            )
         return False
 
 

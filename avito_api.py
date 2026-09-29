@@ -17,6 +17,9 @@ ITEMS_URL = "https://api.avito.ru/core/v1/items"
 STATS_URL = "https://api.avito.ru/stats/v1/accounts/{user_id}/items"
 STATS_V2_ITEMS_URL = "https://api.avito.ru/stats/v2/accounts/{user_id}/items"
 BALANCE_URL = "https://api.avito.ru/core/v1/accounts/{user_id}/balance/"
+# This is the Avito balance displayed as «Аванс» in the connected account's
+# interface. The CPA response is in kopeks, unlike the regular wallet API.
+CPA_BALANCE_URL = "https://api.avito.ru/cpa/v2/balanceInfo"
 CALLS_STATS_URL = "https://api.avito.ru/core/v1/accounts/{user_id}/calls/stats/"
 SPENDINGS_URL = "https://api.avito.ru/stats/v2/accounts/{user_id}/spendings"
 
@@ -104,7 +107,12 @@ def _balance_value(payload: dict[str, Any], *names: str) -> float:
 
 
 async def get_balance(token: str, user_id: int) -> dict[str, float]:
-    """Return the two Avito balances and their total at request time."""
+    """Return the Avito wallet, CPA advance balance and their total.
+
+    ``/core/.../balance`` returns the real wallet and *bonus* funds.  It does
+    not expose the value named «Аванс» in the Avito UI. That value is the
+    current CPA balance returned by ``/cpa/v2/balanceInfo`` in kopeks.
+    """
     async def request() -> dict[str, float]:
         timeout = aiohttp.ClientTimeout(total=30)
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -117,7 +125,21 @@ async def get_balance(token: str, user_id: int) -> dict[str, float]:
                     raise AvitoAPIError(f"Баланс Avito: HTTP {response.status}: {body[:400]}")
                 payload = await response.json()
                 wallet = _balance_value(payload, "real", "wallet", "balance")
-                advance = _balance_value(payload, "bonus", "advance", "avans")
+                async with session.post(
+                    CPA_BALANCE_URL,
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={},
+                ) as cpa_response:
+                    cpa_body = await cpa_response.text()
+                    if cpa_response.status != 200:
+                        raise AvitoAPIError(
+                            f"Аванс Avito: HTTP {cpa_response.status}: {cpa_body[:400]}"
+                        )
+                    cpa_payload = await cpa_response.json()
+                cpa_result = cpa_payload.get("result") or cpa_payload
+                # The documented field ``balance`` is the current CPA balance
+                # (the UI's «Аванс»); divide kopeks by 100 into roubles.
+                advance = _number(cpa_result.get("balance")) / 100
                 return {
                     "wallet": round(wallet, 2),
                     "advance": round(advance, 2),

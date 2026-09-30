@@ -114,8 +114,23 @@ def format_period_report(
 
 
 def format_low_balance_client_alert(store_name: str, mention: str, balance: dict[str, float]) -> str:
-    greeting = f"{escape(mention.strip())}\n" if mention.strip() else ""
-    return "\n".join(["❗ <b>Низкий баланс Avito</b>", greeting.rstrip(), f"Проект: <b>{escape(store_name)}</b>", f"Кошелёк: <b>{balance['wallet']:.2f} ₽</b>", f"Аванс: <b>{balance['advance']:.2f} ₽</b>", f"Общий остаток: <b>{balance['total']:.2f} ₽</b>", "", "Нужно пополнить баланс, чтобы объявления не пропали из поиска.", "Сегодня получится пополнить?"])
+    # The recipient is already in the project's chat, so repeating its name
+    # is noise. Keep the personal tag with the action question at the end.
+    question = "Сегодня получится пополнить?"
+    if mention.strip():
+        question += f" {escape(mention.strip())}"
+    return "\n".join(
+        [
+            "❗ <b>Низкий баланс Avito</b>",
+            "",
+            f"💳 Кошелёк: <b>{balance['wallet']:.2f} ₽</b>",
+            f"💳 Аванс: <b>{balance['advance']:.2f} ₽</b>",
+            f"💳 Общий остаток: <b>{balance['total']:.2f} ₽</b>",
+            "",
+            "Нужно пополнить баланс, чтобы объявления не пропали из поиска.",
+            question,
+        ]
+    )
 
 
 def format_low_balance_team_alert(items: list[tuple[str, str, dict[str, float]]]) -> str:

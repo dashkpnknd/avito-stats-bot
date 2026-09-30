@@ -54,9 +54,10 @@ class MessageTests(unittest.TestCase):
 
     def test_low_balance_alert_has_required_action(self):
         text = format_low_balance_client_alert("Test", "@client", self.balance)
-        self.assertIn("Общий остаток: <b>2900.00 ₽</b>", text)
+        self.assertIn("💳 Общий остаток: <b>2900.00 ₽</b>", text)
         self.assertIn("объявления не пропали из поиска", text)
-        self.assertIn("Сегодня получится пополнить?", text)
+        self.assertTrue(text.endswith("Сегодня получится пополнить? @client"))
+        self.assertNotIn("Проект:", text)
 
     def test_team_alert_is_aggregated(self):
         text = format_low_balance_team_alert([("A", "@a", self.balance), ("B", "", self.balance)])

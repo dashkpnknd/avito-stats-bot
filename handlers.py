@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from html import escape
 
@@ -23,6 +24,7 @@ from scheduler import send_project_report
 from states import AddStore, EditStore
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 def _is_operator(user: types.User | None) -> bool:
@@ -46,6 +48,18 @@ async def _deny_callback(callback: types.CallbackQuery) -> bool:
         return False
     await callback.answer("У вас нет доступа к панели управления.", show_alert=True)
     return True
+
+
+@router.my_chat_member()
+async def track_bot_chat_membership(update: types.ChatMemberUpdated) -> None:
+    """Record a silent join so an operator need not run /get_id in the chat."""
+    if update.new_chat_member.status in {"member", "administrator"}:
+        logger.info(
+            "Бот подключён к чату: id=%s, title=%r, status=%s",
+            update.chat.id,
+            update.chat.title,
+            update.new_chat_member.status,
+        )
 
 
 async def _show_panel(message: types.Message, *, edit: bool = False) -> None:

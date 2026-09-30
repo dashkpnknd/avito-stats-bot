@@ -97,6 +97,24 @@ async def init_db() -> None:
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_report_deliveries_status ON report_deliveries(status, updated_at)"
         )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS draft_projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                store_name TEXT NOT NULL UNIQUE,
+                chat_invite_link TEXT NOT NULL DEFAULT '',
+                client_id TEXT NOT NULL,
+                client_secret TEXT NOT NULL,
+                user_id INTEGER,
+                client_mention TEXT NOT NULL DEFAULT '',
+                daily_enabled INTEGER NOT NULL DEFAULT 0,
+                weekly_enabled INTEGER NOT NULL DEFAULT 0,
+                monthly_enabled INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         now = _now()
         await db.execute("UPDATE stores SET created_at = ? WHERE created_at = ''", (now,))
         await db.execute("UPDATE stores SET updated_at = ? WHERE updated_at = ''", (now,))
@@ -145,6 +163,74 @@ async def add_store(
         )
         await db.commit()
         return cursor.lastrowid
+
+
+async def upsert_draft_project(
+    store_name: str,
+    chat_invite_link: str,
+    client_id: str,
+    client_secret: str,
+    user_id: int,
+    client_mention: str = "",
+    *,
+    daily_enabled: bool = False,
+    weekly_enabled: bool = False,
+    monthly_enabled: bool = False,
+) -> int:
+    """Securely stage a project until the bot is added to its client chat."""
+    now = _now()
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id FROM draft_projects WHERE store_name = ?", (store_name.strip(),)
+        ) as cursor:
+            existing = await cursor.fetchone()
+        values = (
+            chat_invite_link.strip(),
+            client_id.strip(),
+            _encrypt(client_secret.strip()),
+            user_id,
+            client_mention.strip(),
+            int(daily_enabled),
+            int(weekly_enabled),
+            int(monthly_enabled),
+            now,
+        )
+        if existing:
+            await db.execute(
+                """
+                UPDATE draft_projects
+                SET chat_invite_link = ?, client_id = ?, client_secret = ?, user_id = ?,
+                    client_mention = ?, daily_enabled = ?, weekly_enabled = ?,
+                    monthly_enabled = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (*values, existing["id"]),
+            )
+            draft_id = existing["id"]
+        else:
+            cursor = await db.execute(
+                """
+                INSERT INTO draft_projects (
+                    store_name, chat_invite_link, client_id, client_secret, user_id,
+                    client_mention, daily_enabled, weekly_enabled, monthly_enabled,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (store_name.strip(), *values, now),
+            )
+            draft_id = cursor.lastrowid
+        await db.commit()
+        return draft_id
+
+
+async def get_all_draft_projects() -> list[aiosqlite.Row]:
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM draft_projects ORDER BY store_name COLLATE NOCASE"
+        ) as cursor:
+            return await cursor.fetchall()
 
 
 async def get_all_stores() -> list[aiosqlite.Row]:

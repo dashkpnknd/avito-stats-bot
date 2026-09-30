@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import ReplyKeyboardRemove
 
 import avito_api
+import config
 import database
 from keyboards import (
     StoreCallback,
@@ -24,12 +25,27 @@ from states import AddStore, EditStore
 router = Router()
 
 
+def _is_operator(user: types.User | None) -> bool:
+    """Allow only the named team members to manage reports in private chat."""
+    if user is None:
+        return False
+    if user.id in config.ADMIN_IDS:
+        return True
+    return bool(user.username and user.username.casefold() in config.ADMIN_USERNAMES)
+
+
 async def _deny_message(message: types.Message) -> bool:
-    return False
+    if _is_operator(message.from_user):
+        return False
+    await message.answer("У вас нет доступа к панели управления.")
+    return True
 
 
 async def _deny_callback(callback: types.CallbackQuery) -> bool:
-    return False
+    if _is_operator(callback.from_user):
+        return False
+    await callback.answer("У вас нет доступа к панели управления.", show_alert=True)
+    return True
 
 
 async def _show_panel(message: types.Message, *, edit: bool = False) -> None:

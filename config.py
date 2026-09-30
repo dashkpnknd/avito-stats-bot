@@ -14,8 +14,18 @@ def _int_set(value: str) -> set[int]:
     return result
 
 
+def _username_set(value: str) -> set[str]:
+    """Normalize Telegram @usernames for the access-control allowlist."""
+    return {
+        part.strip().lstrip("@").casefold()
+        for part in value.split(",")
+        if part.strip().lstrip("@")
+    }
+
+
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_IDS = _int_set(os.getenv("ADMIN_IDS", ""))
+ADMIN_USERNAMES = _username_set(os.getenv("ADMIN_USERNAMES", ""))
 ADMIN_ALERT_CHAT_IDS = _int_set(os.getenv("ADMIN_ALERT_CHAT_IDS", "")) or ADMIN_IDS
 DB_NAME = os.getenv("DB_NAME", "data/avito_stats.sqlite3")
 FERNET_KEY = os.getenv("CREDENTIALS_ENCRYPTION_KEY", "")
@@ -58,6 +68,8 @@ def validate_config() -> None:
         missing.append("BOT_TOKEN")
     if not FERNET_KEY:
         missing.append("CREDENTIALS_ENCRYPTION_KEY")
+    if not ADMIN_IDS and not ADMIN_USERNAMES:
+        missing.append("ADMIN_IDS or ADMIN_USERNAMES")
     if missing:
         raise RuntimeError("Не заданы обязательные переменные окружения: " + ", ".join(missing))
 

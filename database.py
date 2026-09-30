@@ -233,6 +233,46 @@ async def get_all_draft_projects() -> list[aiosqlite.Row]:
             return await cursor.fetchall()
 
 
+async def activate_draft_project(store_name: str, chat_id: int) -> int:
+    """Atomically move one validated draft into an active client-chat project."""
+    now = _now()
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM draft_projects WHERE store_name = ?", (store_name,)
+        ) as cursor:
+            draft = await cursor.fetchone()
+        if not draft:
+            raise ValueError(f"Черновик «{store_name}» не найден")
+
+        async with db.execute(
+            "SELECT id FROM stores WHERE store_name = ? OR chat_id = ?",
+            (store_name, chat_id),
+        ) as cursor:
+            existing = await cursor.fetchone()
+        if existing:
+            raise ValueError("Проект или чат уже подключён")
+
+        cursor = await db.execute(
+            """
+            INSERT INTO stores (
+                chat_id, store_name, client_id, client_secret, user_id,
+                daily_enabled, weekly_enabled, monthly_enabled, low_balance_enabled,
+                client_mention, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+            """,
+            (
+                chat_id, draft["store_name"], draft["client_id"],
+                draft["client_secret"], draft["user_id"], draft["daily_enabled"],
+                draft["weekly_enabled"], draft["monthly_enabled"],
+                draft["client_mention"], now, now,
+            ),
+        )
+        await db.execute("DELETE FROM draft_projects WHERE id = ?", (draft["id"],))
+        await db.commit()
+        return cursor.lastrowid
+
+
 async def get_all_stores() -> list[aiosqlite.Row]:
     async with aiosqlite.connect(config.DB_NAME) as db:
         db.row_factory = aiosqlite.Row

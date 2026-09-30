@@ -5,6 +5,7 @@ from reports import (
     daily_report_periods,
     format_low_balance_client_alert,
     format_low_balance_team_alert,
+    format_daily_team_summary,
     format_daily_report,
     report_period,
 )
@@ -63,6 +64,18 @@ class MessageTests(unittest.TestCase):
         text = format_low_balance_team_alert([("A", "@a", self.balance), ("B", "", self.balance)])
         self.assertEqual(text.count("<b>Итого: 2900.00 ₽</b>"), 2)
         self.assertIn("<b>A</b> — @a", text)
+
+    def test_daily_team_summary_orders_and_colours_by_yesterday_leads(self):
+        text = format_daily_team_summary([
+            ("Lime Store | Гатчина", {"contacts": 0, "spend": 200}),
+            ("Смартфон 42 | Новокузнецк", {"contacts": 14, "spend": 5169}),
+            ("One | Омск", {"contacts": 1, "spend": 5085}),
+        ])
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "<b>АВИТО · по магазинам:</b>")
+        self.assertEqual(lines[1], "🟢 Новокузнецк · Смартфон 42 — 14 лидов · 5 169 ₽ · CPL 369 ₽")
+        self.assertEqual(lines[2], "🟡 Омск · One — 1 лидов · 5 085 ₽ · CPL 5 085 ₽")
+        self.assertEqual(lines[3], "🔴 Гатчина · Lime Store — 0 лидов · 200 ₽")
 
 
 if __name__ == "__main__":

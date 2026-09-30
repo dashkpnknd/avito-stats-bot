@@ -15,6 +15,7 @@ import config
 import database
 from reports import (
     daily_report_periods,
+    format_daily_team_summary,
     format_low_balance_client_alert,
     format_low_balance_team_alert,
     format_daily_report,
@@ -68,6 +69,37 @@ async def build_report(store, report_type: str, as_of: date) -> str:
     return format_period_report(store["store_name"], report_type, current_from, current_to, current, previous, balance)
 
 
+async def build_daily_report_with_summary(store, as_of: date) -> tuple[str, dict[str, int | float]]:
+    """Build the client report and preserve yesterday's figures for the team.
+
+    Keeping these figures from the same Avito requests avoids a second API pass
+    for the operational summary, which is important for rate-limit safety.
+    """
+    client_id, client_secret = await database.get_store_credentials(store)
+    token = await avito_api.get_avito_token(client_id, client_secret)
+    user_id = store["user_id"] or await avito_api.get_avito_user_id(token)
+    yesterday, week_start, week_end, previous_week_start, previous_week_end = daily_report_periods(as_of)
+    daily = await avito_api.get_daily_promo_stats(token, int(user_id), previous_week_start, week_end)
+    item_ids = await avito_api.get_all_item_ids(token)
+    calls = await avito_api.get_daily_calls(token, int(user_id), item_ids, previous_week_start, week_end)
+    spendings = await avito_api.get_daily_spendings(token, int(user_id), previous_week_start, week_end)
+    for day, value in calls.items():
+        daily.setdefault(day, {"views": 0.0, "contacts": 0.0, "favorites": 0.0, "calls": 0.0, "messages": 0.0, "spend": 0.0})["calls"] = value
+    for day, value in spendings.items():
+        daily.setdefault(day, {"views": 0.0, "contacts": 0.0, "favorites": 0.0, "calls": 0.0, "messages": 0.0, "spend": 0.0})["spend"] = value
+    balance = await avito_api.get_balance(token, int(user_id))
+    yesterday_stats = avito_api.sum_period(daily, yesterday, yesterday)
+    week_stats = avito_api.sum_period(daily, week_start, week_end)
+    previous_week_stats = avito_api.sum_period(daily, previous_week_start, previous_week_end)
+    return (
+        format_daily_report(
+            store["store_name"], yesterday, yesterday_stats, week_start, week_end,
+            week_stats, previous_week_stats, balance,
+        ),
+        yesterday_stats,
+    )
+
+
 async def _telegram_send_with_retry(bot: Bot, chat_id: int, text: str):
     last_error = None
     for attempt in range(3):
@@ -87,6 +119,7 @@ async def send_project_report(
     as_of: date,
     *,
     test: bool = False,
+    daily_summary_items: list[tuple[str, dict[str, int | float]]] | None = None,
 ) -> bool:
     current_from, current_to, _, _ = report_period(report_type, as_of)
     delivery_id = None
@@ -99,12 +132,18 @@ async def send_project_report(
             return True
 
     try:
-        text = await build_report(store, report_type, as_of)
+        yesterday_stats = None
+        if report_type == "daily" and daily_summary_items is not None and not test:
+            text, yesterday_stats = await build_daily_report_with_summary(store, as_of)
+        else:
+            text = await build_report(store, report_type, as_of)
         if test:
             text = "🧪 <b>Тестовая отправка</b>\n\n" + text
         message = await _telegram_send_with_retry(bot, store["chat_id"], text)
         if delivery_id is not None:
             await database.mark_delivery_sent(delivery_id, message.message_id)
+        if yesterday_stats is not None:
+            daily_summary_items.append((store["store_name"], yesterday_stats))
         logger.info("Отчёт %s для %s отправлен", report_type, store["store_name"])
         return True
     except Exception as exc:
@@ -127,8 +166,32 @@ async def scheduled_report_job(bot: Bot, report_type: str) -> None:
     as_of = local_today()
     stores = await database.get_enabled_stores(report_type)
     logger.info("Запуск %s рассылки: %d проектов", report_type, len(stores))
+    daily_summary_items: list[tuple[str, dict[str, int | float]]] | None = (
+        [] if report_type == "daily" else None
+    )
     for store in stores:
-        await send_project_report(bot, store, report_type, as_of)
+        await send_project_report(
+            bot, store, report_type, as_of, daily_summary_items=daily_summary_items
+        )
+    if daily_summary_items:
+        await send_daily_team_summary(bot, daily_summary_items)
+
+
+async def send_daily_team_summary(
+    bot: Bot, items: list[tuple[str, dict[str, int | float]]]
+) -> None:
+    """Publish one compact daily result list after the client reports."""
+    if not config.DAILY_SUMMARY_CHAT_ID:
+        logger.warning("Сводка по магазинам не отправлена: не настроен чат авитологов")
+        return
+    try:
+        await _telegram_send_with_retry(
+            bot, config.DAILY_SUMMARY_CHAT_ID, format_daily_team_summary(items)
+        )
+        logger.info("Сводка по магазинам отправлена: %d проектов", len(items))
+    except Exception:
+        logger.exception("Не удалось отправить ежедневную сводку по магазинам")
+        await _notify_admins(bot, "⚠️ Не отправлена ежедневная сводка Avito по магазинам")
 
 
 def _is_reminder_due(last_alert_at: str | None) -> bool:

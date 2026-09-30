@@ -46,6 +46,12 @@ LOW_BALANCE_REMINDER_HOURS = int(os.getenv("LOW_BALANCE_REMINDER_HOURS", "24"))
 # A dedicated chat/channel for one aggregated notification about all accounts
 # that need attention. The bot must be added there and allowed to post.
 LOW_BALANCE_ALERT_CHAT_ID = int(os.getenv("LOW_BALANCE_ALERT_CHAT_ID", "0") or 0)
+# By default the operational daily summary goes to the same avitologists' chat
+# as the aggregated low-balance alerts. It can be separated later without a
+# code change by setting DAILY_SUMMARY_CHAT_ID.
+DAILY_SUMMARY_CHAT_ID = int(
+    os.getenv("DAILY_SUMMARY_CHAT_ID", str(LOW_BALANCE_ALERT_CHAT_ID)) or 0
+)
 
 # These are the two documented and currently used item-statistics fields. More
 # fields can be enabled only after they are confirmed for the connected Avito API.

@@ -139,3 +139,33 @@ def format_low_balance_team_alert(items: list[tuple[str, str, dict[str, float]]]
         suffix = f" — {escape(mention)}" if mention else ""
         lines.extend([f"<b>{escape(store_name)}</b>{suffix}", f"Кошелёк: {balance['wallet']:.2f} ₽ | Аванс: {balance['advance']:.2f} ₽ | <b>Итого: {balance['total']:.2f} ₽</b>"])
     return "\n".join(lines)
+
+
+def _summary_project_label(store_name: str) -> tuple[str, str]:
+    """Return ``city, project`` from the team's ``Project | City`` naming."""
+    project, separator, city = store_name.partition("|")
+    if separator and project.strip() and city.strip():
+        return city.strip(), project.strip()
+    return "", store_name.strip()
+
+
+def format_daily_team_summary(items: list[tuple[str, dict[str, int | float]]]) -> str:
+    """Compact yesterday-only operational view for the avitologists' chat."""
+    prepared: list[tuple[str, str, float, float]] = []
+    for store_name, stats in items:
+        city, project = _summary_project_label(store_name)
+        prepared.append((city, project, float(stats.get("contacts", 0)), float(stats.get("spend", 0))))
+
+    # The most actionable accounts (fewest leads / highest cost) stay visible
+    # at the bottom of each colour group; within a group, show high-volume
+    # stores first for a quick scan.
+    prepared.sort(key=lambda item: (-item[2], -item[3], item[0].casefold(), item[1].casefold()))
+    lines = ["<b>АВИТО · по магазинам:</b>"]
+    for city, project, leads, spend in prepared:
+        icon = "🟢" if leads >= 2 else "🟡" if leads == 1 else "🔴"
+        place = f"{city} · {project}" if city else project
+        line = f"{icon} {escape(place)} — {_money(leads)} лидов · {_money(spend)} ₽"
+        if leads:
+            line += f" · CPL {_money(spend / leads)} ₽"
+        lines.append(line)
+    return "\n".join(lines)

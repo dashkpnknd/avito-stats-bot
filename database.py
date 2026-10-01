@@ -55,6 +55,9 @@ async def init_db() -> None:
                 client_mention TEXT NOT NULL DEFAULT '',
                 low_balance_is_low INTEGER NOT NULL DEFAULT 0,
                 low_balance_last_alert_at TEXT,
+                low_balance_client_sent_at TEXT,
+                low_balance_team_sent_at TEXT,
+                low_balance_cycle_completed_at TEXT,
                 created_at TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT ''
             )
@@ -69,11 +72,27 @@ async def init_db() -> None:
             "client_mention": "TEXT NOT NULL DEFAULT ''",
             "low_balance_is_low": "INTEGER NOT NULL DEFAULT 0",
             "low_balance_last_alert_at": "TEXT",
+            "low_balance_client_sent_at": "TEXT",
+            "low_balance_team_sent_at": "TEXT",
+            "low_balance_cycle_completed_at": "TEXT",
             "created_at": "TEXT NOT NULL DEFAULT ''",
             "updated_at": "TEXT NOT NULL DEFAULT ''",
         }.items():
             if column not in columns:
                 await db.execute(f"ALTER TABLE stores ADD COLUMN {column} {definition}")
+
+        # Existing installations have one timestamp that meant a successful
+        # alert cycle. Treat it as completed for both destinations so an
+        # upgrade never produces an unexpected duplicate notification.
+        await db.execute(
+            """
+            UPDATE stores
+            SET low_balance_client_sent_at = COALESCE(low_balance_client_sent_at, low_balance_last_alert_at),
+                low_balance_team_sent_at = COALESCE(low_balance_team_sent_at, low_balance_last_alert_at),
+                low_balance_cycle_completed_at = COALESCE(low_balance_cycle_completed_at, low_balance_last_alert_at)
+            WHERE low_balance_last_alert_at IS NOT NULL
+            """
+        )
 
         await db.execute(
             """
@@ -360,20 +379,83 @@ async def update_low_balance_state(
 ) -> None:
     """Persist threshold state so the client is not messaged every poll."""
     async with aiosqlite.connect(config.DB_NAME) as db:
-        if alert_sent:
+        if not is_low:
             await db.execute(
                 """
                 UPDATE stores
-                SET low_balance_is_low = ?, low_balance_last_alert_at = ?, updated_at = ?
+                SET low_balance_is_low = 0, low_balance_last_alert_at = NULL,
+                    low_balance_client_sent_at = NULL, low_balance_team_sent_at = NULL,
+                    low_balance_cycle_completed_at = NULL, updated_at = ?
                 WHERE id = ?
                 """,
-                (int(is_low), _now(), _now(), store_id),
+                (_now(), store_id),
+            )
+        elif alert_sent:
+            now = _now()
+            await db.execute(
+                """
+                UPDATE stores
+                SET low_balance_is_low = 1, low_balance_last_alert_at = ?,
+                    low_balance_client_sent_at = ?, low_balance_team_sent_at = ?,
+                    low_balance_cycle_completed_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, now, now, now, now, store_id),
             )
         else:
             await db.execute(
                 "UPDATE stores SET low_balance_is_low = ?, updated_at = ? WHERE id = ?",
                 (int(is_low), _now(), store_id),
             )
+        await db.commit()
+
+
+async def start_low_balance_delivery_cycle(store_id: int) -> None:
+    """Start one two-destination notification cycle for an active low balance."""
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        await db.execute(
+            """
+            UPDATE stores
+            SET low_balance_is_low = 1, low_balance_client_sent_at = NULL,
+                low_balance_team_sent_at = NULL, low_balance_cycle_completed_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (_now(), store_id),
+        )
+        await db.commit()
+
+
+async def mark_low_balance_destination_sent(store_id: int, destination: str) -> None:
+    """Persist one successful delivery without marking the other destination sent."""
+    columns = {
+        "client": "low_balance_client_sent_at",
+        "team": "low_balance_team_sent_at",
+    }
+    try:
+        column = columns[destination]
+    except KeyError as exc:
+        raise ValueError(f"Неизвестное назначение уведомления: {destination}") from exc
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        await db.execute(
+            f"UPDATE stores SET {column} = ?, updated_at = ? WHERE id = ?",
+            (_now(), _now(), store_id),
+        )
+        await db.commit()
+
+
+async def complete_low_balance_delivery_cycle(store_id: int) -> None:
+    """Close a cycle only after both required destinations have succeeded."""
+    now = _now()
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        await db.execute(
+            """
+            UPDATE stores
+            SET low_balance_last_alert_at = ?, low_balance_cycle_completed_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (now, now, now, store_id),
+        )
         await db.commit()
 
 

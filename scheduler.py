@@ -338,7 +338,12 @@ def _is_reminder_due(last_alert_at: str | None) -> bool:
 
 
 async def check_low_balances_job(bot: Bot) -> None:
-    """Notify the client and team once per low-balance project event."""
+    """Deliver each low-balance cycle to client and team independently.
+
+    A successful client send is stored separately from the team-chat send.
+    Therefore a temporary failure in either destination is retried on the next
+    hourly check without duplicating the destination that already received it.
+    """
     stores = await database.get_balance_monitored_stores()
     for store in stores:
         try:
@@ -353,17 +358,32 @@ async def check_low_balances_job(bot: Bot) -> None:
                 await database.update_low_balance_state(store["id"], is_low=False)
                 continue
 
-            needs_alert = not bool(store["low_balance_is_low"]) or _is_reminder_due(
-                store["low_balance_last_alert_at"]
+            cycle_completed_at = store["low_balance_cycle_completed_at"]
+            start_new_cycle = not bool(store["low_balance_is_low"]) or (
+                bool(cycle_completed_at) and _is_reminder_due(cycle_completed_at)
             )
-            if not needs_alert:
+            if start_new_cycle:
+                await database.start_low_balance_delivery_cycle(store["id"])
+                client_sent_at = None
+                team_sent_at = None
+            else:
+                client_sent_at = store["low_balance_client_sent_at"]
+                team_sent_at = store["low_balance_team_sent_at"]
+
+            # A fully completed cycle remains quiet until the 24-hour reminder
+            # window elapses. A partially completed cycle is never skipped.
+            if client_sent_at and (team_sent_at or not config.LOW_BALANCE_ALERT_CHAT_ID):
                 continue
-            text = format_low_balance_client_alert(
-                store["store_name"], store["client_mention"], balance
-            )
-            await _telegram_send_with_retry(bot, store["chat_id"], text)
-            await database.update_low_balance_state(store["id"], is_low=True, alert_sent=True)
-            if config.LOW_BALANCE_ALERT_CHAT_ID:
+
+            if not client_sent_at:
+                text = format_low_balance_client_alert(
+                    store["store_name"], store["client_mention"], balance
+                )
+                await _telegram_send_with_retry(bot, store["chat_id"], text)
+                await database.mark_low_balance_destination_sent(store["id"], "client")
+                client_sent_at = "sent"
+
+            if config.LOW_BALANCE_ALERT_CHAT_ID and not team_sent_at:
                 await _telegram_send_with_retry(
                     bot,
                     config.LOW_BALANCE_ALERT_CHAT_ID,
@@ -371,6 +391,11 @@ async def check_low_balances_job(bot: Bot) -> None:
                         [(store["store_name"], store["client_mention"], balance)]
                     ),
                 )
+                await database.mark_low_balance_destination_sent(store["id"], "team")
+                team_sent_at = "sent"
+
+            if client_sent_at and (team_sent_at or not config.LOW_BALANCE_ALERT_CHAT_ID):
+                await database.complete_low_balance_delivery_cycle(store["id"])
             logger.warning("Отправлено предупреждение о низком балансе: %s", store["store_name"])
         except Exception as exc:
             logger.exception("Не удалось проверить баланс проекта %s", store["store_name"])

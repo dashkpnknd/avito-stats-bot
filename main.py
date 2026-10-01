@@ -56,7 +56,9 @@ async def main() -> None:
         scheduled_report_job,
         trigger="cron",
         id="monthly_reports",
-        day="1",
+        # The cron expression wakes on the possible final days. The job
+        # itself confirms the actual final calendar day (including February).
+        day="28-31",
         hour=config.MONTHLY_HOUR,
         minute=config.MONTHLY_MINUTE,
         kwargs={"bot": bot, "report_type": "monthly"},

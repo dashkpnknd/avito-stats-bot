@@ -169,6 +169,9 @@ async def send_project_report(
 
 
 async def scheduled_report_job(bot: Bot, report_type: str) -> None:
+    if report_type == "monthly" and not is_last_day_of_month(local_today()):
+        logger.info("Месячная рассылка пропущена: сегодня не последний день месяца")
+        return
     async with _REPORT_JOB_LOCK:
         as_of = local_today()
         stores = await database.get_enabled_stores(report_type)
@@ -295,3 +298,8 @@ def local_today() -> date:
     from datetime import datetime
 
     return datetime.now(ZoneInfo(config.TIMEZONE)).date()
+
+
+def is_last_day_of_month(day: date) -> bool:
+    """Return true for the real final calendar day, including February."""
+    return (day + timedelta(days=1)).month != day.month

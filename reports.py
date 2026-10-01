@@ -134,7 +134,8 @@ def format_low_balance_client_alert(store_name: str, mention: str, balance: dict
 
 
 def format_low_balance_team_alert(items: list[tuple[str, str, dict[str, float]]]) -> str:
-    lines = ["❗ <b>Низкие балансы Avito</b>", ""]
+    title = "❗ <b>Низкий баланс Avito</b>" if len(items) == 1 else "❗ <b>Низкие балансы Avito</b>"
+    lines = [title, ""]
     for store_name, mention, balance in items:
         suffix = f" — {escape(mention)}" if mention else ""
         lines.extend([f"<b>{escape(store_name)}</b>{suffix}", f"Кошелёк: {balance['wallet']:.2f} ₽ | Аванс: {balance['advance']:.2f} ₽ | <b>Итого: {balance['total']:.2f} ₽</b>"])

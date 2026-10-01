@@ -149,6 +149,7 @@ async def send_project_report(
     *,
     test: bool = False,
     summary_items: list[tuple[str, dict[str, int | float]]] | None = None,
+    team_details: list[str] | None = None,
     notify_on_failure: bool = True,
 ) -> bool:
     current_from, current_to, _, _ = report_period(report_type, as_of)
@@ -176,6 +177,8 @@ async def send_project_report(
             await database.mark_delivery_sent(delivery_id, message.message_id)
         if yesterday_stats is not None:
             summary_items.append((store["store_name"], yesterday_stats))
+        if team_details is not None and not test:
+            team_details.append(text)
         logger.info("Отчёт %s для %s отправлен", report_type, store["store_name"])
         return True
     except Exception as exc:
@@ -202,9 +205,13 @@ async def scheduled_report_job(bot: Bot, report_type: str) -> None:
         as_of = local_today()
         stores = await database.get_enabled_stores(report_type)
         logger.info("Запуск %s рассылки: %d проектов", report_type, len(stores))
+        if report_type == "weekly":
+            await send_weekly_reports_to_team(bot, stores, as_of)
+            return
         summary_items: list[tuple[str, dict[str, int | float]]] | None = (
-            [] if report_type in {"daily", "weekly"} else None
+            [] if report_type == "daily" else None
         )
+        team_details: list[str] = []
         pending = list(stores)
         # Requests themselves have exponential 429 backoff. This second pass
         # covers a quota outage that outlives a single project attempt, without
@@ -218,6 +225,7 @@ async def scheduled_report_job(bot: Bot, report_type: str) -> None:
                     report_type,
                     as_of,
                     summary_items=summary_items,
+                    team_details=team_details,
                     notify_on_failure=False,
                 )
                 if not sent:
@@ -241,10 +249,9 @@ async def scheduled_report_job(bot: Bot, report_type: str) -> None:
                     f"⚠️ Не отправлен {report_type}-отчёт для «{store['store_name']}» после повторных попыток.",
                 )
         if summary_items:
-            if report_type == "daily":
-                await send_daily_team_summary(bot, summary_items)
-            else:
-                await send_weekly_team_summary(bot, summary_items, as_of)
+            await send_daily_team_summary(bot, summary_items)
+        if team_details:
+            await send_team_detailed_reports(bot, team_details)
 
 
 async def send_daily_team_summary(
@@ -284,6 +291,36 @@ async def send_weekly_team_summary(
         await _notify_admins(bot, "⚠️ Не отправлена недельная сводка Avito по магазинам")
 
 
+async def send_team_detailed_reports(bot: Bot, reports: list[str]) -> None:
+    """Send already built, client-format reports only to the team chat."""
+    if not config.DAILY_SUMMARY_CHAT_ID:
+        logger.warning("Подробные отчёты не отправлены: не настроен чат авитологов")
+        return
+    for report in reports:
+        await _telegram_send_with_retry(bot, config.DAILY_SUMMARY_CHAT_ID, report)
+
+
+async def send_weekly_reports_to_team(bot: Bot, stores, as_of: date) -> None:
+    """Weekly details belong only in the avitologists' chat, never in client chats."""
+    summary_items: list[tuple[str, dict[str, int | float]]] = []
+    details: list[str] = []
+    for store in stores:
+        try:
+            text, stats = await build_weekly_report_with_summary(store, as_of)
+            summary_items.append((store["store_name"], stats))
+            details.append(text)
+        except Exception as exc:
+            logger.exception("Ошибка недельного отчёта для команды: %s", store["store_name"])
+            await _notify_admins(
+                bot,
+                f"⚠️ Не собран weekly-отчёт для «{store['store_name']}»: {str(exc)[:800]}",
+            )
+    if summary_items:
+        await send_weekly_team_summary(bot, summary_items, as_of)
+    if details:
+        await send_team_detailed_reports(bot, details)
+
+
 def _is_reminder_due(last_alert_at: str | None) -> bool:
     if not last_alert_at:
         return True
@@ -297,9 +334,8 @@ def _is_reminder_due(last_alert_at: str | None) -> bool:
 
 
 async def check_low_balances_job(bot: Bot) -> None:
-    """Notify clients on threshold crossing and send one aggregate team alert."""
+    """Notify the client and team once per low-balance project event."""
     stores = await database.get_balance_monitored_stores()
-    team_items: list[tuple[str, str, dict[str, float]]] = []
     for store in stores:
         try:
             client_id, client_secret = await database.get_store_credentials(store)
@@ -323,25 +359,20 @@ async def check_low_balances_job(bot: Bot) -> None:
             )
             await _telegram_send_with_retry(bot, store["chat_id"], text)
             await database.update_low_balance_state(store["id"], is_low=True, alert_sent=True)
-            team_items.append((store["store_name"], store["client_mention"], balance))
+            if config.LOW_BALANCE_ALERT_CHAT_ID:
+                await _telegram_send_with_retry(
+                    bot,
+                    config.LOW_BALANCE_ALERT_CHAT_ID,
+                    format_low_balance_team_alert(
+                        [(store["store_name"], store["client_mention"], balance)]
+                    ),
+                )
             logger.warning("Отправлено предупреждение о низком балансе: %s", store["store_name"])
         except Exception as exc:
             logger.exception("Не удалось проверить баланс проекта %s", store["store_name"])
             await _notify_admins(
                 bot, f"⚠️ Не проверен баланс «{store['store_name']}»: {str(exc)[:800]}"
             )
-
-    if team_items and config.LOW_BALANCE_ALERT_CHAT_ID:
-        try:
-            await _telegram_send_with_retry(
-                bot,
-                config.LOW_BALANCE_ALERT_CHAT_ID,
-                format_low_balance_team_alert(team_items),
-            )
-        except Exception:
-            logger.exception("Не удалось отправить сводку низких балансов авитологам")
-            await _notify_admins(bot, "⚠️ Не отправлена сводка низких балансов в чат авитологов")
-
 
 def local_today() -> date:
     from datetime import datetime

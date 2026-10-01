@@ -106,18 +106,20 @@ def _balance_value(payload: dict[str, Any], *names: str) -> float:
     return 0.0
 
 
-def _cpa_advance_value(payload: dict[str, Any]) -> float:
-    """Read the explicitly named CPA advance and convert kopeks to roubles."""
+def _cpa_balance_value(payload: dict[str, Any]) -> float:
+    """Read the current CPA wallet balance and convert kopeks to roubles."""
     result = payload.get("result") or payload
-    return _number(result.get("advance")) / 100
+    return _number(result.get("balance")) / 100
 
 
 async def get_balance(token: str, user_id: int) -> dict[str, float]:
-    """Return the Avito wallet, CPA advance balance and their total.
+    """Return the Avito wallet, CPA balance and their total.
 
     ``/core/.../balance`` exposes the actual wallet. The CPA endpoint has two
-    values: ``balance`` and ``advance``. Only the latter is the amount named
-    «Аванс» in Avito's interface; the CPA values are in kopeks.
+    values: ``balance`` and ``advance``. The current CPA balance is the
+    second available account balance shown to operators as «Аванс»; the
+    ``advance`` field is a separate technical/credit parameter. CPA values
+    are returned in kopeks.
     """
     async def request() -> dict[str, float]:
         timeout = aiohttp.ClientTimeout(total=30)
@@ -142,9 +144,7 @@ async def get_balance(token: str, user_id: int) -> dict[str, float]:
                             f"Аванс Avito: HTTP {cpa_response.status}: {cpa_body[:400]}"
                         )
                     cpa_payload = await cpa_response.json()
-                # Do not substitute the CPA account balance for the UI's
-                # «Аванс»: it has its own explicitly named field.
-                advance = _cpa_advance_value(cpa_payload)
+                advance = _cpa_balance_value(cpa_payload)
                 return {
                     "wallet": round(wallet, 2),
                     "advance": round(advance, 2),

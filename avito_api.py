@@ -28,6 +28,15 @@ class AvitoAPIError(RuntimeError):
     pass
 
 
+class AvitoRateLimitError(AvitoAPIError):
+    """Avito temporarily throttled this API application."""
+
+
+def _response_error(scope: str, status: int, body: str) -> AvitoAPIError:
+    error_class = AvitoRateLimitError if status == 429 else AvitoAPIError
+    return error_class(f"{scope}: HTTP {status}: {body[:400]}")
+
+
 def _number(value: Any) -> float:
     try:
         return float(value or 0)
@@ -42,7 +51,7 @@ def _metric(day: dict[str, Any], *names: str) -> float:
     return 0.0
 
 
-async def _request_with_retry(call, attempts: int = 3):
+async def _request_with_retry(call, attempts: int = 4):
     last_error: Exception | None = None
     for attempt in range(attempts):
         try:
@@ -50,7 +59,10 @@ async def _request_with_retry(call, attempts: int = 3):
         except (aiohttp.ClientError, asyncio.TimeoutError, AvitoAPIError) as exc:
             last_error = exc
             if attempt + 1 < attempts:
-                await asyncio.sleep(2**attempt)
+                # Avito's 429 is a temporary quota response, not a malformed
+                # request. Give the shared API quota time to recover.
+                delay = 20 * (2**attempt) if isinstance(exc, AvitoRateLimitError) else 2**attempt
+                await asyncio.sleep(delay)
     raise AvitoAPIError(str(last_error) if last_error else "Неизвестная ошибка Avito API")
 
 
@@ -68,7 +80,7 @@ async def get_avito_token(client_id: str, client_secret: str) -> str:
             ) as response:
                 body = await response.text()
                 if response.status != 200:
-                    raise AvitoAPIError(f"Токен Avito: HTTP {response.status}: {body[:400]}")
+                    raise _response_error("Токен Avito", response.status, body)
                 token = (await response.json()).get("access_token")
                 if not token:
                     raise AvitoAPIError("Avito не вернул access_token")
@@ -84,7 +96,7 @@ async def get_avito_user_id(token: str) -> int:
             async with session.get(SELF_URL, headers={"Authorization": f"Bearer {token}"}) as response:
                 body = await response.text()
                 if response.status != 200:
-                    raise AvitoAPIError(f"Аккаунт Avito: HTTP {response.status}: {body[:400]}")
+                    raise _response_error("Аккаунт Avito", response.status, body)
                 user_id = (await response.json()).get("id")
                 if not user_id:
                     raise AvitoAPIError("Avito не вернул ID аккаунта")
@@ -130,7 +142,7 @@ async def get_balance(token: str, user_id: int) -> dict[str, float]:
             ) as response:
                 body = await response.text()
                 if response.status != 200:
-                    raise AvitoAPIError(f"Баланс Avito: HTTP {response.status}: {body[:400]}")
+                    raise _response_error("Баланс Avito", response.status, body)
                 payload = await response.json()
                 wallet = _balance_value(payload, "real", "wallet", "balance")
                 async with session.post(
@@ -140,9 +152,7 @@ async def get_balance(token: str, user_id: int) -> dict[str, float]:
                 ) as cpa_response:
                     cpa_body = await cpa_response.text()
                     if cpa_response.status != 200:
-                        raise AvitoAPIError(
-                            f"Аванс Avito: HTTP {cpa_response.status}: {cpa_body[:400]}"
-                        )
+                        raise _response_error("Аванс Avito", cpa_response.status, cpa_body)
                     cpa_payload = await cpa_response.json()
                 advance = _cpa_balance_value(cpa_payload)
                 return {
@@ -172,8 +182,8 @@ async def get_all_item_ids(token: str) -> list[int]:
                     ) as response:
                         body = await response.text()
                         if response.status != 200:
-                            raise AvitoAPIError(
-                                f"Список объявлений ({status}): HTTP {response.status}: {body[:400]}"
+                            raise _response_error(
+                                f"Список объявлений ({status})", response.status, body
                             )
                         return await response.json()
 
@@ -218,7 +228,7 @@ async def get_daily_stats(
                 ) as response:
                     body = await response.text()
                     if response.status != 200:
-                        raise AvitoAPIError(f"Статистика Avito: HTTP {response.status}: {body[:400]}")
+                        raise _response_error("Статистика Avito", response.status, body)
                     return await response.json()
 
             payload = await _request_with_retry(request)
@@ -268,9 +278,7 @@ async def get_daily_promo_stats(
             ) as response:
                 body = await response.text()
                 if response.status != 200:
-                    raise AvitoAPIError(
-                        f"Сообщения Avito: HTTP {response.status}: {body[:400]}"
-                    )
+                    raise _response_error("Сообщения Avito", response.status, body)
                 return await response.json()
 
     payload = await _request_with_retry(request)
@@ -324,7 +332,7 @@ async def get_daily_calls(
                 ) as response:
                     body = await response.text()
                     if response.status != 200:
-                        raise AvitoAPIError(f"Звонки Avito: HTTP {response.status}: {body[:400]}")
+                        raise _response_error("Звонки Avito", response.status, body)
                     return await response.json()
 
             payload = await _request_with_retry(request)
@@ -360,7 +368,7 @@ async def get_daily_spendings(
             ) as response:
                 body = await response.text()
                 if response.status != 200:
-                    raise AvitoAPIError(f"Расходы Avito: HTTP {response.status}: {body[:400]}")
+                    raise _response_error("Расходы Avito", response.status, body)
                 return await response.json()
 
     payload = await _request_with_retry(request)

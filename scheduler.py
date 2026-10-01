@@ -25,6 +25,11 @@ from reports import (
 
 logger = logging.getLogger(__name__)
 
+# APScheduler starts the daily and monthly jobs independently. Serialising them
+# prevents the two report types from exhausting Avito's shared API quota at
+# 10:00 on the first day of a month.
+_REPORT_JOB_LOCK = asyncio.Lock()
+
 
 async def _notify_admins(bot: Bot, text: str) -> None:
     for chat_id in config.ADMIN_ALERT_CHAT_IDS:
@@ -120,6 +125,7 @@ async def send_project_report(
     *,
     test: bool = False,
     daily_summary_items: list[tuple[str, dict[str, int | float]]] | None = None,
+    notify_on_failure: bool = True,
 ) -> bool:
     current_from, current_to, _, _ = report_period(report_type, as_of)
     delivery_id = None
@@ -154,7 +160,7 @@ async def send_project_report(
         # Do not pollute the avitologists' operational chat with transient
         # Avito rate-limit errors from such a test. Scheduled deliveries still
         # notify the team about every real failure.
-        if not test:
+        if not test and notify_on_failure:
             await _notify_admins(
                 bot,
                 f"⚠️ Не отправлен {report_type}-отчёт для «{store['store_name']}»: {str(exc)[:800]}",
@@ -163,18 +169,50 @@ async def send_project_report(
 
 
 async def scheduled_report_job(bot: Bot, report_type: str) -> None:
-    as_of = local_today()
-    stores = await database.get_enabled_stores(report_type)
-    logger.info("Запуск %s рассылки: %d проектов", report_type, len(stores))
-    daily_summary_items: list[tuple[str, dict[str, int | float]]] | None = (
-        [] if report_type == "daily" else None
-    )
-    for store in stores:
-        await send_project_report(
-            bot, store, report_type, as_of, daily_summary_items=daily_summary_items
+    async with _REPORT_JOB_LOCK:
+        as_of = local_today()
+        stores = await database.get_enabled_stores(report_type)
+        logger.info("Запуск %s рассылки: %d проектов", report_type, len(stores))
+        daily_summary_items: list[tuple[str, dict[str, int | float]]] | None = (
+            [] if report_type == "daily" else None
         )
-    if daily_summary_items:
-        await send_daily_team_summary(bot, daily_summary_items)
+        pending = list(stores)
+        # Requests themselves have exponential 429 backoff. This second pass
+        # covers a quota outage that outlives a single project attempt, without
+        # leaving that project's report until tomorrow/next month.
+        for batch_attempt in range(3):
+            failed = []
+            for store in pending:
+                sent = await send_project_report(
+                    bot,
+                    store,
+                    report_type,
+                    as_of,
+                    daily_summary_items=daily_summary_items,
+                    notify_on_failure=False,
+                )
+                if not sent:
+                    failed.append(store)
+            if not failed:
+                pending = []
+                break
+            pending = failed
+            if batch_attempt < 2:
+                delay = 60 * (batch_attempt + 1)
+                logger.warning(
+                    "%s: повтор %d отчётов через %d секунд",
+                    report_type, len(pending), delay,
+                )
+                await asyncio.sleep(delay)
+
+        if pending:
+            for store in pending:
+                await _notify_admins(
+                    bot,
+                    f"⚠️ Не отправлен {report_type}-отчёт для «{store['store_name']}» после повторных попыток.",
+                )
+        if daily_summary_items:
+            await send_daily_team_summary(bot, daily_summary_items)
 
 
 async def send_daily_team_summary(

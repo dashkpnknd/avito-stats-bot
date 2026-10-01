@@ -8,6 +8,7 @@ from reports import (
     format_daily_team_summary,
     format_weekly_team_summary,
     format_daily_report,
+    format_daily_team_report,
     report_period,
 )
 
@@ -53,6 +54,17 @@ class MessageTests(unittest.TestCase):
             daily_report_periods(date(2026, 9, 28)),
             (date(2026, 9, 27), date(2026, 9, 21), date(2026, 9, 27), date(2026, 9, 14), date(2026, 9, 20)),
         )
+
+    def test_daily_team_report_has_only_yesterday(self):
+        text = format_daily_team_report(
+            "Test <shop>",
+            date(2026, 9, 27),
+            {"views": 5, "contacts": 1, "calls": 1, "messages": 0, "spend": 100},
+            self.balance,
+        )
+        self.assertIn("<b>Вчера</b> (27.09)", text)
+        self.assertNotIn("<b>Неделя</b>", text)
+        self.assertIn("💳 Кошелёк: <b>1 200 ₽</b> | Аванс: <b>1 700 ₽</b>", text)
 
     def test_low_balance_alert_has_required_action(self):
         text = format_low_balance_client_alert("Test", "@client", self.balance)

@@ -98,6 +98,24 @@ def format_daily_report(
     return "\n".join(lines)
 
 
+def format_daily_team_report(
+    store_name: str,
+    yesterday: date,
+    yesterday_stats: dict[str, int | float],
+    balance: dict[str, float],
+) -> str:
+    """Detailed operational daily report: yesterday only, never a weekly block.
+
+    Client reports deliberately retain their rolling seven-day context. The
+    avitologists' daily flow is different: its weekly view is a separate
+    Monday delivery, so this template contains only the previous day.
+    """
+    lines = [f"📊 <b>Статистика: {escape(store_name.upper())}</b>", "━━━━━━━━━━━━━━━━━━━━", ""]
+    lines.extend(_period_block("Вчера", yesterday, yesterday, yesterday_stats))
+    lines.extend(["", f"💳 Кошелёк: <b>{_money(balance['wallet'])} ₽</b> | Аванс: <b>{_money(balance['advance'])} ₽</b>"])
+    return "\n".join(lines)
+
+
 def format_period_report(
     store_name: str,
     report_type: str,

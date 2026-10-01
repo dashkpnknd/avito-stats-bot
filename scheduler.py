@@ -19,6 +19,7 @@ from reports import (
     format_low_balance_client_alert,
     format_low_balance_team_alert,
     format_daily_report,
+    format_daily_team_report,
     format_period_report,
     format_weekly_team_summary,
     report_period,
@@ -75,7 +76,9 @@ async def build_report(store, report_type: str, as_of: date) -> str:
     return format_period_report(store["store_name"], report_type, current_from, current_to, current, previous, balance)
 
 
-async def build_daily_report_with_summary(store, as_of: date) -> tuple[str, dict[str, int | float]]:
+async def build_daily_report_with_summary(
+    store, as_of: date
+) -> tuple[str, str, dict[str, int | float]]:
     """Build the client report and preserve yesterday's figures for the team.
 
     Keeping these figures from the same Avito requests avoids a second API pass
@@ -97,13 +100,14 @@ async def build_daily_report_with_summary(store, as_of: date) -> tuple[str, dict
     yesterday_stats = avito_api.sum_period(daily, yesterday, yesterday)
     week_stats = avito_api.sum_period(daily, week_start, week_end)
     previous_week_stats = avito_api.sum_period(daily, previous_week_start, previous_week_end)
-    return (
-        format_daily_report(
-            store["store_name"], yesterday, yesterday_stats, week_start, week_end,
-            week_stats, previous_week_stats, balance,
-        ),
-        yesterday_stats,
+    client_report = format_daily_report(
+        store["store_name"], yesterday, yesterday_stats, week_start, week_end,
+        week_stats, previous_week_stats, balance,
     )
+    team_report = format_daily_team_report(
+        store["store_name"], yesterday, yesterday_stats, balance
+    )
+    return client_report, team_report, yesterday_stats
 
 
 async def build_weekly_report_with_summary(store, as_of: date) -> tuple[str, dict[str, int | float]]:
@@ -165,7 +169,7 @@ async def send_project_report(
     try:
         yesterday_stats = None
         if report_type == "daily" and summary_items is not None and not test:
-            text, yesterday_stats = await build_daily_report_with_summary(store, as_of)
+            text, team_text, yesterday_stats = await build_daily_report_with_summary(store, as_of)
         elif report_type == "weekly" and summary_items is not None and not test:
             text, yesterday_stats = await build_weekly_report_with_summary(store, as_of)
         else:
@@ -178,7 +182,7 @@ async def send_project_report(
         if yesterday_stats is not None:
             summary_items.append((store["store_name"], yesterday_stats))
         if team_details is not None and not test:
-            team_details.append(text)
+            team_details.append(team_text if report_type == "daily" else text)
         logger.info("Отчёт %s для %s отправлен", report_type, store["store_name"])
         return True
     except Exception as exc:

@@ -6,6 +6,7 @@ from reports import (
     format_low_balance_client_alert,
     format_low_balance_team_alert,
     format_daily_team_summary,
+    format_weekly_team_summary,
     format_daily_report,
     report_period,
 )
@@ -76,6 +77,14 @@ class MessageTests(unittest.TestCase):
         self.assertEqual(lines[1], "🟢 Новокузнецк · Смартфон 42 — 14 лидов · 5 169 ₽ · CPL 369 ₽")
         self.assertEqual(lines[2], "🟡 Омск · One — 1 лидов · 5 085 ₽ · CPL 5 085 ₽")
         self.assertEqual(lines[3], "🔴 Гатчина · Lime Store — 0 лидов · 200 ₽")
+
+    def test_weekly_team_summary_includes_completed_week_range(self):
+        text = format_weekly_team_summary(
+            [("Store | Город", {"contacts": 2, "spend": 500})],
+            date(2026, 9, 21), date(2026, 9, 27),
+        )
+        self.assertIn("<b>Неделя (21.09 – 27.09)</b>", text)
+        self.assertIn("🟢 Город · Store — 2 лидов · 500 ₽ · CPL 250 ₽", text)
 
 
 if __name__ == "__main__":

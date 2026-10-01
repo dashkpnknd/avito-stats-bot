@@ -149,8 +149,11 @@ def _summary_project_label(store_name: str) -> tuple[str, str]:
     return "", store_name.strip()
 
 
-def format_daily_team_summary(items: list[tuple[str, dict[str, int | float]]]) -> str:
-    """Compact yesterday-only operational view for the avitologists' chat."""
+def _format_team_summary(
+    items: list[tuple[str, dict[str, int | float]]],
+    period_label: str = "",
+) -> str:
+    """Compact operational view for the avitologists' chat."""
     prepared: list[tuple[str, str, float, float]] = []
     for store_name, stats in items:
         city, project = _summary_project_label(store_name)
@@ -161,6 +164,8 @@ def format_daily_team_summary(items: list[tuple[str, dict[str, int | float]]]) -
     # stores first for a quick scan.
     prepared.sort(key=lambda item: (-item[2], -item[3], item[0].casefold(), item[1].casefold()))
     lines = ["<b>АВИТО · по магазинам:</b>"]
+    if period_label:
+        lines.append(period_label)
     for city, project, leads, spend in prepared:
         icon = "🟢" if leads >= 2 else "🟡" if leads == 1 else "🔴"
         place = f"{city} · {project}" if city else project
@@ -169,3 +174,18 @@ def format_daily_team_summary(items: list[tuple[str, dict[str, int | float]]]) -
             line += f" · CPL {_money(spend / leads)} ₽"
         lines.append(line)
     return "\n".join(lines)
+
+
+def format_daily_team_summary(items: list[tuple[str, dict[str, int | float]]]) -> str:
+    return _format_team_summary(items)
+
+
+def format_weekly_team_summary(
+    items: list[tuple[str, dict[str, int | float]]],
+    date_from: date,
+    date_to: date,
+) -> str:
+    return _format_team_summary(
+        items,
+        f"📅 <b>Неделя ({_range_label(date_from, date_to)})</b>",
+    )

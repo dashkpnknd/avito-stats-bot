@@ -17,8 +17,8 @@ ITEMS_URL = "https://api.avito.ru/core/v1/items"
 STATS_URL = "https://api.avito.ru/stats/v1/accounts/{user_id}/items"
 STATS_V2_ITEMS_URL = "https://api.avito.ru/stats/v2/accounts/{user_id}/items"
 BALANCE_URL = "https://api.avito.ru/core/v1/accounts/{user_id}/balance/"
-# This is the Avito balance displayed as «Аванс» in the connected account's
-# interface. The CPA response is in kopeks, unlike the regular wallet API.
+# The CPA response contains a separately named ``advance`` in kopeks, unlike
+# the regular wallet API which is returned in roubles.
 CPA_BALANCE_URL = "https://api.avito.ru/cpa/v2/balanceInfo"
 CALLS_STATS_URL = "https://api.avito.ru/core/v1/accounts/{user_id}/calls/stats/"
 SPENDINGS_URL = "https://api.avito.ru/stats/v2/accounts/{user_id}/spendings"
@@ -106,12 +106,18 @@ def _balance_value(payload: dict[str, Any], *names: str) -> float:
     return 0.0
 
 
+def _cpa_advance_value(payload: dict[str, Any]) -> float:
+    """Read the explicitly named CPA advance and convert kopeks to roubles."""
+    result = payload.get("result") or payload
+    return _number(result.get("advance")) / 100
+
+
 async def get_balance(token: str, user_id: int) -> dict[str, float]:
     """Return the Avito wallet, CPA advance balance and their total.
 
-    ``/core/.../balance`` returns the real wallet and *bonus* funds.  It does
-    not expose the value named «Аванс» in the Avito UI. That value is the
-    current CPA balance returned by ``/cpa/v2/balanceInfo`` in kopeks.
+    ``/core/.../balance`` exposes the actual wallet. The CPA endpoint has two
+    values: ``balance`` and ``advance``. Only the latter is the amount named
+    «Аванс» in Avito's interface; the CPA values are in kopeks.
     """
     async def request() -> dict[str, float]:
         timeout = aiohttp.ClientTimeout(total=30)
@@ -136,10 +142,9 @@ async def get_balance(token: str, user_id: int) -> dict[str, float]:
                             f"Аванс Avito: HTTP {cpa_response.status}: {cpa_body[:400]}"
                         )
                     cpa_payload = await cpa_response.json()
-                cpa_result = cpa_payload.get("result") or cpa_payload
-                # The documented field ``balance`` is the current CPA balance
-                # (the UI's «Аванс»); divide kopeks by 100 into roubles.
-                advance = _number(cpa_result.get("balance")) / 100
+                # Do not substitute the CPA account balance for the UI's
+                # «Аванс»: it has its own explicitly named field.
+                advance = _cpa_advance_value(cpa_payload)
                 return {
                     "wallet": round(wallet, 2),
                     "advance": round(advance, 2),

@@ -32,3 +32,19 @@ wheels/
 *.swo
 .DS_Store
 Thumbs.db
+
+# Local runtime files
+.env.*
+!.env.example
+*.session*
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.log
+backups/
+logs/
+sessions/
+secrets/
+profiles/
+._*

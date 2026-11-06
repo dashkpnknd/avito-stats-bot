@@ -79,9 +79,11 @@ async def _show_panel(message: types.Message, *, edit: bool = False) -> None:
 
 @router.message(Command("get_id"))
 async def cmd_get_id(message: types.Message):
-    """Public utility: use it in the target group after adding the bot there."""
+    """Return the current group or private chat ID without changing settings."""
     if message.chat.type == "private":
-        return await message.answer("Добавьте бота в нужную группу и выполните там /get_id.")
+        return await message.answer(
+            f"Ваш личный Telegram ID: <code>{message.chat.id}</code>", parse_mode="HTML"
+        )
     await message.answer(f"ID этого чата: <code>{message.chat.id}</code>", parse_mode="HTML")
 
 

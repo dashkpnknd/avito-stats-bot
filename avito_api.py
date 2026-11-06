@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import aiohttp
@@ -22,6 +22,9 @@ BALANCE_URL = "https://api.avito.ru/core/v1/accounts/{user_id}/balance/"
 CPA_BALANCE_URL = "https://api.avito.ru/cpa/v2/balanceInfo"
 CALLS_STATS_URL = "https://api.avito.ru/core/v1/accounts/{user_id}/calls/stats/"
 SPENDINGS_URL = "https://api.avito.ru/stats/v2/accounts/{user_id}/spendings"
+# This is the regular account endpoint, not the Avito Promo agency API.  It
+# accepts the same client-credentials token used for a store's reports.
+OPERATIONS_HISTORY_URL = "https://api.avito.ru/core/v1/accounts/operations_history/"
 
 
 class AvitoAPIError(RuntimeError):
@@ -63,7 +66,12 @@ async def _request_with_retry(call, attempts: int = 4):
                 # request. Give the shared API quota time to recover.
                 delay = 20 * (2**attempt) if isinstance(exc, AvitoRateLimitError) else 2**attempt
                 await asyncio.sleep(delay)
-    raise AvitoAPIError(str(last_error) if last_error else "Неизвестная ошибка Avito API")
+    if last_error is None:
+        raise AvitoAPIError("Неизвестная ошибка Avito API")
+    # aiohttp's TimeoutError has an empty string representation. Keep the
+    # class name, otherwise operational alerts end with a useless colon.
+    detail = str(last_error).strip() or type(last_error).__name__
+    raise AvitoAPIError(detail)
 
 
 async def get_avito_token(client_id: str, client_secret: str) -> str:
@@ -162,6 +170,150 @@ async def get_balance(token: str, user_id: int) -> dict[str, float]:
                 }
 
     return await _request_with_retry(request)
+
+
+def _parse_api_datetime(value: Any) -> datetime | None:
+    """Parse an Avito RFC3339 timestamp without treating a bad row as fatal."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return result if result.tzinfo else result.replace(tzinfo=timezone.utc)
+
+
+def add_tariff_period(value: datetime) -> datetime:
+    """Return the end of Avito's fixed 30-day subscription period.
+
+    The regular Goods tariff renews after 30 days from its tariff operation;
+    it is not a calendar-month subscription.  The time and timezone are kept
+    exactly so the displayed date agrees with the account's next debit.
+    """
+    return value + timedelta(days=30)
+
+
+async def get_latest_tariff_operation(
+    token: str,
+    *,
+    now: datetime | None = None,
+    lookback_days: int = 42,
+) -> datetime | None:
+    """Find the most recent subscription/tariff operation for one account.
+
+    ``operations_history`` is limited by Avito to a seven-day request window.
+    We only inspect a short rolling period, then the caller caches the result
+    until the calculated renewal date.  This avoids a daily historical scan.
+    ``updatedAt`` is the documented operation timestamp; ``paidAt`` is used as
+    a fallback for payload variants that expose only the payment timestamp.
+    """
+    if lookback_days < 1:
+        raise ValueError("lookback_days должен быть положительным")
+
+    end = now or datetime.now(timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    start_limit = end - timedelta(days=lookback_days)
+    latest: datetime | None = None
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    timeout = aiohttp.ClientTimeout(total=30)
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        while end > start_limit:
+            # The public contract permits a period of at most one week.
+            start = max(start_limit, end - timedelta(days=6, hours=23, minutes=59))
+
+            async def request() -> dict[str, Any]:
+                async with session.post(
+                    OPERATIONS_HISTORY_URL,
+                    headers=headers,
+                    json={"dateTimeFrom": start.isoformat(), "dateTimeTo": end.isoformat()},
+                ) as response:
+                    body = await response.text()
+                    if response.status != 200:
+                        raise _response_error("История операций Avito", response.status, body)
+                    return await response.json()
+
+            payload = await _request_with_retry(request)
+            operations = ((payload.get("result") or {}).get("operations") or [])
+            for operation in operations:
+                if operation.get("serviceType") not in {"tariff", "subscription"}:
+                    continue
+                occurred_at = _parse_api_datetime(
+                    operation.get("updatedAt") or operation.get("paidAt")
+                )
+                if occurred_at and (latest is None or occurred_at > latest):
+                    latest = occurred_at
+            end = start - timedelta(seconds=1)
+
+    return latest
+
+
+async def get_tariff_operations(
+    token: str,
+    *,
+    now: datetime | None = None,
+    lookback_days: int = 92,
+) -> list[datetime]:
+    """Return tariff/subscription operation timestamps, newest first.
+
+    Unlike :func:`get_latest_tariff_operation`, this is used only to validate
+    that the most recent tariff debit is part of a monthly cycle.  The result
+    lets the caller avoid presenting a forecast as a confirmed expiry date.
+    """
+    if lookback_days < 1:
+        raise ValueError("lookback_days должен быть положительным")
+
+    end = now or datetime.now(timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    start_limit = end - timedelta(days=lookback_days)
+    operations_at: set[datetime] = set()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    timeout = aiohttp.ClientTimeout(total=30)
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        while end > start_limit:
+            start = max(start_limit, end - timedelta(days=6, hours=23, minutes=59))
+
+            async def request() -> dict[str, Any]:
+                async with session.post(
+                    OPERATIONS_HISTORY_URL,
+                    headers=headers,
+                    json={"dateTimeFrom": start.isoformat(), "dateTimeTo": end.isoformat()},
+                ) as response:
+                    body = await response.text()
+                    if response.status != 200:
+                        raise _response_error("История операций Avito", response.status, body)
+                    return await response.json()
+
+            payload = await _request_with_retry(request)
+            for operation in ((payload.get("result") or {}).get("operations") or []):
+                if operation.get("serviceType") not in {"tariff", "subscription"}:
+                    continue
+                occurred_at = _parse_api_datetime(
+                    operation.get("updatedAt") or operation.get("paidAt")
+                )
+                if occurred_at:
+                    operations_at.add(occurred_at)
+            end = start - timedelta(seconds=1)
+
+    return sorted(operations_at, reverse=True)
+
+
+def has_confirmed_monthly_tariff_cycle(operations: list[datetime]) -> bool:
+    """Whether the two latest tariff debits occurred on consecutive months.
+
+    The account API does not provide an explicit expiry field for ordinary
+    Goods accounts.  We therefore display a calculated date only after seeing
+    the latest debit repeat on the same calendar day in the preceding month.
+    A different date can indicate a one-off tariff operation and is not safe
+    to present as an active-until date.
+    """
+    if len(operations) < 2:
+        return False
+    latest, previous = sorted(operations, reverse=True)[:2]
+    return add_tariff_period(previous) == latest
 
 
 async def get_all_item_ids(token: str) -> list[int]:

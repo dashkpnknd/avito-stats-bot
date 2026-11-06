@@ -42,6 +42,9 @@ MONTHLY_MINUTE = int(os.getenv("MONTHLY_REPORT_MINUTE", "0"))
 # advance balances. A project may disable monitoring in the bot panel.
 LOW_BALANCE_THRESHOLD = float(os.getenv("LOW_BALANCE_THRESHOLD", "3000"))
 LOW_BALANCE_CHECK_MINUTES = int(os.getenv("LOW_BALANCE_CHECK_MINUTES", "60"))
+# Run on a predictable minute, outside the 10:00 report burst.  The interval
+# value is retained for backwards-compatible validation and documentation.
+LOW_BALANCE_CHECK_MINUTE = int(os.getenv("LOW_BALANCE_CHECK_MINUTE", "40"))
 LOW_BALANCE_REMINDER_HOURS = int(os.getenv("LOW_BALANCE_REMINDER_HOURS", "24"))
 # A dedicated chat/channel for one aggregated notification about all accounts
 # that need attention. The bot must be added there and allowed to post.
@@ -89,6 +92,8 @@ def validate_config() -> None:
         raise RuntimeError("Порог низкого баланса не может быть отрицательным")
     if LOW_BALANCE_CHECK_MINUTES < 5:
         raise RuntimeError("Проверка баланса должна выполняться не реже чем раз в 5 минут")
+    if not 0 <= LOW_BALANCE_CHECK_MINUTE <= 59:
+        raise RuntimeError("Минута проверки баланса должна быть от 0 до 59")
     if LOW_BALANCE_REMINDER_HOURS < 1:
         raise RuntimeError("Интервал повторного напоминания должен быть не меньше часа")
 

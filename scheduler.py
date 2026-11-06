@@ -32,6 +32,14 @@ logger = logging.getLogger(__name__)
 # 10:00 on the first day of a month.
 _REPORT_JOB_LOCK = asyncio.Lock()
 
+# On Mondays the daily report has already read the exact two completed weeks
+# needed for the team-only weekly view. Reusing this in-memory snapshot avoids
+# a second burst of Avito calls immediately after the client delivery.
+_WEEKLY_TEAM_SNAPSHOTS: dict[
+    tuple[date, int],
+    tuple[dict[str, int | float], dict[str, int | float], dict[str, float], datetime | None],
+] = {}
+
 
 async def _notify_admins(bot: Bot, text: str) -> None:
     for chat_id in config.ADMIN_ALERT_CHAT_IDS:
@@ -39,6 +47,53 @@ async def _notify_admins(bot: Bot, text: str) -> None:
             await bot.send_message(chat_id, text)
         except TelegramAPIError:
             logger.exception("Не удалось уведомить администратора %s", chat_id)
+
+
+def _parse_cached_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return result if result.tzinfo else result.replace(tzinfo=timezone.utc)
+
+
+async def get_tariff_valid_until(store, token: str) -> datetime | None:
+    """Return a cached tariff renewal date, refreshing it only when needed.
+
+    The regular account API exposes tariff operations, not a separate expiry
+    field.  For Goods, the tariff period is a fixed 30 days, counted from its
+    latest tariff operation.  ``tariff_verified`` remains useful diagnostic
+    metadata but does not alter the published renewal date.
+    """
+    now = datetime.now(timezone.utc)
+    cached_until = _parse_cached_datetime(store["tariff_valid_until"])
+    if cached_until and cached_until > now:
+        return cached_until
+
+    checked_at = _parse_cached_datetime(store["tariff_checked_at"])
+    if checked_at and checked_at + timedelta(hours=24) > now:
+        return None
+
+    try:
+        operations = await avito_api.get_tariff_operations(token, now=now)
+    except Exception:
+        # Tariff information is supplementary.  A temporary error here must
+        # never prevent the main statistics report from reaching the client.
+        logger.exception("Не удалось прочитать историю тарифа для %s", store["store_name"])
+        return None
+
+    last_operation_at = operations[0] if operations else None
+    verified = avito_api.has_confirmed_monthly_tariff_cycle(operations)
+    valid_until = avito_api.add_tariff_period(last_operation_at) if last_operation_at else None
+    await database.update_tariff_cache(
+        store["id"],
+        last_operation_at=last_operation_at.isoformat() if last_operation_at else None,
+        valid_until=valid_until.isoformat() if valid_until else None,
+        verified=verified,
+    )
+    return valid_until if valid_until and valid_until > now else None
 
 
 async def build_report(store, report_type: str, as_of: date) -> str:
@@ -63,6 +118,7 @@ async def build_report(store, report_type: str, as_of: date) -> str:
     for day, value in spendings.items():
         daily.setdefault(day, {"views": 0.0, "contacts": 0.0, "favorites": 0.0, "calls": 0.0, "messages": 0.0, "spend": 0.0})["spend"] = value
     balance = await avito_api.get_balance(token, int(user_id))
+    tariff_valid_until = await get_tariff_valid_until(store, token)
     if report_type == "daily":
         yesterday_stats = avito_api.sum_period(daily, yesterday, yesterday)
         week_stats = avito_api.sum_period(daily, week_start, week_end)
@@ -70,10 +126,14 @@ async def build_report(store, report_type: str, as_of: date) -> str:
         return format_daily_report(
             store["store_name"], yesterday, yesterday_stats, week_start, week_end,
             week_stats, previous_week_stats, balance,
+            tariff_valid_until,
         )
     current = avito_api.sum_period(daily, current_from, current_to)
     previous = avito_api.sum_period(daily, previous_from, previous_to)
-    return format_period_report(store["store_name"], report_type, current_from, current_to, current, previous, balance)
+    return format_period_report(
+        store["store_name"], report_type, current_from, current_to, current, previous,
+        balance, tariff_valid_until,
+    )
 
 
 async def build_daily_report_with_summary(
@@ -97,15 +157,22 @@ async def build_daily_report_with_summary(
     for day, value in spendings.items():
         daily.setdefault(day, {"views": 0.0, "contacts": 0.0, "favorites": 0.0, "calls": 0.0, "messages": 0.0, "spend": 0.0})["spend"] = value
     balance = await avito_api.get_balance(token, int(user_id))
+    tariff_valid_until = await get_tariff_valid_until(store, token)
     yesterday_stats = avito_api.sum_period(daily, yesterday, yesterday)
     week_stats = avito_api.sum_period(daily, week_start, week_end)
     previous_week_stats = avito_api.sum_period(daily, previous_week_start, previous_week_end)
     client_report = format_daily_report(
         store["store_name"], yesterday, yesterday_stats, week_start, week_end,
-        week_stats, previous_week_stats, balance,
+        week_stats, previous_week_stats, balance, tariff_valid_until,
     )
     team_report = format_daily_team_report(
-        store["store_name"], yesterday, yesterday_stats, balance
+        store["store_name"], yesterday, yesterday_stats, balance, tariff_valid_until
+    )
+    _WEEKLY_TEAM_SNAPSHOTS[(as_of, int(store["id"]))] = (
+        week_stats,
+        previous_week_stats,
+        balance,
+        tariff_valid_until,
     )
     return client_report, team_report, yesterday_stats
 
@@ -125,10 +192,14 @@ async def build_weekly_report_with_summary(store, as_of: date) -> tuple[str, dic
     for day, value in spendings.items():
         daily.setdefault(day, {"views": 0.0, "contacts": 0.0, "favorites": 0.0, "calls": 0.0, "messages": 0.0, "spend": 0.0})["spend"] = value
     balance = await avito_api.get_balance(token, int(user_id))
+    tariff_valid_until = await get_tariff_valid_until(store, token)
     current = avito_api.sum_period(daily, current_from, current_to)
     previous = avito_api.sum_period(daily, previous_from, previous_to)
     return (
-        format_period_report(store["store_name"], "weekly", current_from, current_to, current, previous, balance),
+        format_period_report(
+            store["store_name"], "weekly", current_from, current_to, current, previous,
+            balance, tariff_valid_until,
+        ),
         current,
     )
 
@@ -308,17 +379,39 @@ async def send_weekly_reports_to_team(bot: Bot, stores, as_of: date) -> None:
     """Weekly details belong only in the avitologists' chat, never in client chats."""
     summary_items: list[tuple[str, dict[str, int | float]]] = []
     details: list[str] = []
+    current_from, current_to, _, _ = report_period("weekly", as_of)
+    missing_snapshots = []
     for store in stores:
+        snapshot = _WEEKLY_TEAM_SNAPSHOTS.pop((as_of, int(store["id"])), None)
+        if snapshot:
+            current, previous, balance, tariff_valid_until = snapshot
+            summary_items.append((store["store_name"], current))
+            details.append(
+                format_period_report(
+                    store["store_name"], "weekly", current_from, current_to,
+                    current, previous, balance, tariff_valid_until,
+                )
+            )
+            continue
+        missing_snapshots.append(store)
+
+    # A restart between daily and weekly jobs is unusual. In that case fall
+    # back to a direct request, but report a single summary if Avito is still
+    # throttling rather than emitting one noisy alert per project.
+    failed_names: list[str] = []
+    for store in missing_snapshots:
         try:
             text, stats = await build_weekly_report_with_summary(store, as_of)
             summary_items.append((store["store_name"], stats))
             details.append(text)
-        except Exception as exc:
+        except Exception:
             logger.exception("Ошибка недельного отчёта для команды: %s", store["store_name"])
-            await _notify_admins(
-                bot,
-                f"⚠️ Не собран weekly-отчёт для «{store['store_name']}»: {str(exc)[:800]}",
-            )
+            failed_names.append(store["store_name"])
+    if failed_names:
+        await _notify_admins(
+            bot,
+            "⚠️ Не собраны недельные отчёты: " + ", ".join(failed_names) + ".",
+        )
     if summary_items:
         await send_weekly_team_summary(bot, summary_items, as_of)
     if details:
@@ -345,6 +438,7 @@ async def check_low_balances_job(bot: Bot) -> None:
     hourly check without duplicating the destination that already received it.
     """
     stores = await database.get_balance_monitored_stores()
+    failed_names: list[str] = []
     for store in stores:
         try:
             client_id, client_secret = await database.get_store_credentials(store)
@@ -397,11 +491,12 @@ async def check_low_balances_job(bot: Bot) -> None:
             if client_sent_at and (team_sent_at or not config.LOW_BALANCE_ALERT_CHAT_ID):
                 await database.complete_low_balance_delivery_cycle(store["id"])
             logger.warning("Отправлено предупреждение о низком балансе: %s", store["store_name"])
-        except Exception as exc:
+        except Exception:
             logger.exception("Не удалось проверить баланс проекта %s", store["store_name"])
-            await _notify_admins(
-                bot, f"⚠️ Не проверен баланс «{store['store_name']}»: {str(exc)[:800]}"
-            )
+            failed_names.append(store["store_name"])
+    if failed_names:
+        await _notify_admins(
+            bot, "⚠️ Не проверены балансы: " + ", ".join(failed_names) + ".")
 
 def local_today() -> date:
     from datetime import datetime

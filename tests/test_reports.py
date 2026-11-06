@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 import unittest
 
 from reports import (
@@ -54,6 +54,18 @@ class MessageTests(unittest.TestCase):
             daily_report_periods(date(2026, 9, 28)),
             (date(2026, 9, 27), date(2026, 9, 21), date(2026, 9, 27), date(2026, 9, 14), date(2026, 9, 20)),
         )
+
+    def test_report_shows_tariff_renewal_when_available(self):
+        text = format_daily_report(
+            "Test shop", date(2026, 10, 11),
+            {"views": 5, "contacts": 1, "calls": 0, "messages": 1, "spend": 100},
+            date(2026, 10, 5), date(2026, 10, 11),
+            {"views": 50, "contacts": 10, "calls": 2, "messages": 8, "spend": 1000},
+            {"views": 40, "contacts": 8, "calls": 1, "messages": 7, "spend": 800},
+            self.balance,
+            datetime(2026, 11, 3, 14, 34, tzinfo=timezone.utc),
+        )
+        self.assertTrue(text.endswith("📅 Тариф активен до: <b>03.11</b>"))
 
     def test_daily_team_report_has_only_yesterday(self):
         text = format_daily_team_report(

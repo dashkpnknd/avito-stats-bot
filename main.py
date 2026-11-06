@@ -44,9 +44,12 @@ async def main() -> None:
     )
     scheduler.add_job(
         check_low_balances_job,
-        trigger="interval",
+        # An interval starts counting from process boot and can therefore land
+        # immediately after the 10:00 reports.  A fixed minute keeps the
+        # hourly balance check away from Avito's report-request burst.
+        trigger="cron",
         id="low_balance_checks",
-        minutes=config.LOW_BALANCE_CHECK_MINUTES,
+        minute=config.LOW_BALANCE_CHECK_MINUTE,
         kwargs={"bot": bot},
         replace_existing=True,
         max_instances=1,

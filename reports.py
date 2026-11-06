@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from html import escape
 
 
@@ -89,12 +89,15 @@ def format_daily_report(
     week_stats: dict[str, int | float],
     previous_week_stats: dict[str, int | float],
     balance: dict[str, float],
+    tariff_valid_until: datetime | None = None,
 ) -> str:
     lines = [f"📊 <b>Статистика: {escape(store_name.upper())}</b>", "━━━━━━━━━━━━━━━━━━━━", ""]
     lines.extend(_period_block("Вчера", yesterday, yesterday, yesterday_stats))
     lines.append("")
     lines.extend(_period_block("Неделя", week_start, week_end, week_stats, previous_week_stats))
     lines.extend(["", f"💳 Кошелёк: <b>{_money(balance['wallet'])} ₽</b> | Аванс: <b>{_money(balance['advance'])} ₽</b>"])
+    if tariff_valid_until:
+        lines.append(f"📅 Тариф активен до: <b>{tariff_valid_until:%d.%m}</b>")
     return "\n".join(lines)
 
 
@@ -103,6 +106,7 @@ def format_daily_team_report(
     yesterday: date,
     yesterday_stats: dict[str, int | float],
     balance: dict[str, float],
+    tariff_valid_until: datetime | None = None,
 ) -> str:
     """Detailed operational daily report: yesterday only, never a weekly block.
 
@@ -113,6 +117,8 @@ def format_daily_team_report(
     lines = [f"📊 <b>Статистика: {escape(store_name.upper())}</b>", "━━━━━━━━━━━━━━━━━━━━", ""]
     lines.extend(_period_block("Вчера", yesterday, yesterday, yesterday_stats))
     lines.extend(["", f"💳 Кошелёк: <b>{_money(balance['wallet'])} ₽</b> | Аванс: <b>{_money(balance['advance'])} ₽</b>"])
+    if tariff_valid_until:
+        lines.append(f"📅 Тариф активен до: <b>{tariff_valid_until:%d.%m}</b>")
     return "\n".join(lines)
 
 
@@ -124,10 +130,13 @@ def format_period_report(
     current: dict[str, int | float],
     previous: dict[str, int | float],
     balance: dict[str, float],
+    tariff_valid_until: datetime | None = None,
 ) -> str:
     lines = [f"📊 <b>Статистика: {escape(store_name.upper())}</b>", "━━━━━━━━━━━━━━━━━━━━", ""]
     lines.extend(_period_block(REPORT_LABELS[report_type], current_from, current_to, current, previous))
     lines.extend(["", f"💳 Кошелёк: <b>{_money(balance['wallet'])} ₽</b> | Аванс: <b>{_money(balance['advance'])} ₽</b>"])
+    if tariff_valid_until:
+        lines.append(f"📅 Тариф активен до: <b>{tariff_valid_until:%d.%m}</b>")
     return "\n".join(lines)
 
 

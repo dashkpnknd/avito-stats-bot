@@ -11,6 +11,14 @@ _TEMP_DIR = tempfile.TemporaryDirectory()
 os.environ["DB_NAME"] = str(Path(_TEMP_DIR.name) / "test.sqlite3")
 os.environ["CREDENTIALS_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 
+import config  # noqa: E402
+
+# Other test modules may load config before this module during discovery.
+# Set the already-imported module too, so this test can never touch production
+# data when the full suite is executed in the service virtualenv.
+config.DB_NAME = os.environ["DB_NAME"]
+config.FERNET_KEY = os.environ["CREDENTIALS_ENCRYPTION_KEY"]
+
 import database  # noqa: E402
 
 
@@ -26,6 +34,18 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(store["low_balance_enabled"], 1)
             self.assertEqual(store["client_mention"], "@client")
             self.assertEqual(await database.get_store_credentials(store), ("id", "secret"))
+
+            await database.update_tariff_cache(
+                store_id,
+                last_operation_at="2026-10-03T14:34:00+03:00",
+                valid_until="2026-11-02T14:34:00+03:00",
+                verified=True,
+            )
+            store = await database.get_store_by_id(store_id)
+            self.assertEqual(store["tariff_last_operation_at"], "2026-10-03T14:34:00+03:00")
+            self.assertEqual(store["tariff_valid_until"], "2026-11-02T14:34:00+03:00")
+            self.assertEqual(store["tariff_verified"], 1)
+            self.assertIsNotNone(store["tariff_checked_at"])
 
             draft_id = await database.upsert_draft_project(
                 "Draft", "https://t.me/+example", "draft-id", "draft-secret", 777,

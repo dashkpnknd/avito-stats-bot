@@ -58,6 +58,10 @@ async def init_db() -> None:
                 low_balance_client_sent_at TEXT,
                 low_balance_team_sent_at TEXT,
                 low_balance_cycle_completed_at TEXT,
+                tariff_last_operation_at TEXT,
+                tariff_valid_until TEXT,
+                tariff_verified INTEGER NOT NULL DEFAULT 0,
+                tariff_checked_at TEXT,
                 created_at TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT ''
             )
@@ -75,6 +79,10 @@ async def init_db() -> None:
             "low_balance_client_sent_at": "TEXT",
             "low_balance_team_sent_at": "TEXT",
             "low_balance_cycle_completed_at": "TEXT",
+            "tariff_last_operation_at": "TEXT",
+            "tariff_valid_until": "TEXT",
+            "tariff_verified": "INTEGER NOT NULL DEFAULT 0",
+            "tariff_checked_at": "TEXT",
             "created_at": "TEXT NOT NULL DEFAULT ''",
             "updated_at": "TEXT NOT NULL DEFAULT ''",
         }.items():
@@ -327,6 +335,27 @@ async def get_store_by_id(store_id: int) -> aiosqlite.Row | None:
 
 async def get_store_credentials(store: aiosqlite.Row) -> tuple[str, str]:
     return store["client_id"], _decrypt(store["client_secret"])
+
+
+async def update_tariff_cache(
+    store_id: int,
+    *,
+    last_operation_at: str | None,
+    valid_until: str | None,
+    verified: bool = False,
+) -> None:
+    """Store a read-only tariff-history lookup and its calculated renewal."""
+    async with aiosqlite.connect(config.DB_NAME) as db:
+        await db.execute(
+            """
+            UPDATE stores
+            SET tariff_last_operation_at = ?, tariff_valid_until = ?, tariff_verified = ?,
+                tariff_checked_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (last_operation_at, valid_until, int(verified), _now(), _now(), store_id),
+        )
+        await db.commit()
 
 
 async def toggle_report(store_id: int, report_type: str) -> bool | None:

@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -12,6 +12,26 @@ class MonthlyScheduleTests(unittest.TestCase):
         self.assertTrue(scheduler.is_last_day_of_month(date(2028, 2, 29)))
         self.assertFalse(scheduler.is_last_day_of_month(date(2026, 10, 1)))
         self.assertFalse(scheduler.is_last_day_of_month(date(2026, 2, 27)))
+
+
+class WeeklyTeamSnapshotTests(unittest.IsolatedAsyncioTestCase):
+    async def test_weekly_team_reuses_daily_snapshot_without_avito_calls(self):
+        store = {"id": 7, "store_name": "Test | City"}
+        as_of = date(2026, 10, 19)
+        scheduler._WEEKLY_TEAM_SNAPSHOTS[(as_of, 7)] = (
+            {"views": 20, "contacts": 2, "calls": 1, "messages": 1, "spend": 100},
+            {"views": 10, "contacts": 1, "calls": 0, "messages": 1, "spend": 50},
+            {"wallet": 200, "advance": 300, "total": 500},
+            datetime(2026, 11, 1, tzinfo=timezone.utc),
+        )
+        with patch.object(scheduler, "build_weekly_report_with_summary", AsyncMock()) as build, \
+             patch.object(scheduler, "send_weekly_team_summary", AsyncMock()) as summary, \
+             patch.object(scheduler, "send_team_detailed_reports", AsyncMock()) as details:
+            await scheduler.send_weekly_reports_to_team(object(), [store], as_of)
+
+        build.assert_not_awaited()
+        summary.assert_awaited_once()
+        details.assert_awaited_once()
 
 
 class LowBalanceDeliveryTests(unittest.IsolatedAsyncioTestCase):

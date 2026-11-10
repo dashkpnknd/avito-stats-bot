@@ -47,3 +47,7 @@ python3 -m compileall -q .
 ```
 
 Не добавляйте в GitHub токен бота, Client Secret Avito, SQLite-базу или `/etc/avito-stats-bot.env`.
+
+## Связи и границы проекта
+
+Этот бот собирает статистику объявлений Avito и отправляет ежедневные, недельные и месячные Telegram-отчёты по проектам. Сверка цен объявлений — отдельная задача `avito-tg-price-monitor`.
